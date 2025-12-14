@@ -120,6 +120,7 @@ class GitignoreMatcher:
             return False
 
 
+
 class TabFix:
     def __init__(self, spaces_per_tab: int = 4):
         self.spaces_per_tab = spaces_per_tab
