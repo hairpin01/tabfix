@@ -253,7 +253,7 @@ def check_path_in_path(install_path: Path) -> bool:
 def main():
     print_color("tabfix installer", Colors.BOLD + Colors.CYAN)
     
-    SCRIPT_URL = "" # <- поменять тута патом 
+    SCRIPT_URL = "https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabfix/tabfix" 
     
     existing_path, install_type = find_existing_installation()
     
