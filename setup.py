@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="tabfix-tool",
-    version="1.1.0",
+    version="1.1.1",
     author="hairpin01",
     author_email="alichka240784@gmail.com",
     description="Advanced tool for fixing tab/space indentation issues",

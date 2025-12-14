@@ -1,5 +1,5 @@
-__version__ = "1.0.0"
-__author__ = "Alina"
+__version__ = "1.1.0"
+__author__ = "hairpin01"
 __license__ = "GNU General Public License v3.0"
 
 from .core import main, TabFix, GitignoreMatcher, Colors
