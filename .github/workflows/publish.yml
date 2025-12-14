@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]  # Убрали 3.7
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]  # Убрали 3.7 нахуй от туда 😡😡😡😡
 
     steps:
     - uses: actions/checkout@v4
