@@ -15,7 +15,7 @@ Advanced tool for fixing `tab/space` indentation issues in `code` files.
 ## Installation
 ```shell
 # Install from PyPI
-pip install tabfix-tool 
+pip install tabfix-tool
 ```
 ```shell
 # Or directly from GitHub
