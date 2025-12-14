@@ -54,7 +54,3 @@ Changelog = "https://github.com/hairpin01/tabfix/releases"
 
 [project.scripts]
 tabfix = "tabfix.__main__:main"
-
-[project.entry-points."tabfix_plugins"]
-git = "tabfix.git_utils:GitignoreMatcher"
-colors = "tabfix.color_utils:Colors"
