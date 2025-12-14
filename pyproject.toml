@@ -39,6 +39,8 @@ dev = [
     "twine>=4.0.0",
     "build>=0.10.0",
 ]
+encoding = ["charset-normalizer>=3.0.0"]
+full = ["charset-normalizer>=3.0.0", "binaryornot>=0.4.4"]
 
 [project.urls]
 Homepage = "https://github.com/hairpin01/tabfix"
@@ -48,8 +50,4 @@ Issues = "https://github.com/hairpin01/tabfix/issues"
 Changelog = "https://github.com/hairpin01/tabfix/releases"
 
 [project.scripts]
-tabfix = "tabfix.__main__:main"
-
-[project.optional-dependencies]
-encoding = ["charset-normalizer>=3.0.0"]
-full = ["charset-normalizer>=3.0.0", "binaryornot>=0.4.4"]
+tabfix = "tabfix.__main__:main"
