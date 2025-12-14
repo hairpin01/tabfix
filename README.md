@@ -26,7 +26,7 @@ or via installer
 curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/tags/v1.0.1/src/tabfix/installer.py | python3
 ```
 ## From source
-`git clone https://github.com/alina/tabfix.git
+`git clone https://github.com/hairpin01/tabfix.git
 && cd tabfix
 && pip install -e .
 `
