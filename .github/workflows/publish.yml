@@ -84,7 +84,7 @@ jobs:
     
     permissions:
       id-token: write
-      contents: write  
+      contents: write
     
     steps:
     - uses: actions/checkout@v4
@@ -97,14 +97,24 @@ jobs:
     
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        skip-existing: true  
     
     - name: Create GitHub Release
       if: github.event_name == 'release'
-      uses: softprops/action-gh-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  
-      with:
-        files: |
-          dist/*.tar.gz
-          dist/*.whl
-        generate_release_notes: true
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        TAG_NAME="${GITHUB_REF#refs/tags/}"
+        echo "Creating release for tag: $TAG_NAME"
+        echo "## tabfix-tool $TAG_NAME" > release_notes.md
+        echo "" >> release_notes.md
+        echo "### Changes" >> release_notes.md
+        echo "- Bug fixes and improvements" >> release_notes.md
+        
+        
+        gh release create "$TAG_NAME" \
+          --title "tabfix-tool $TAG_NAME" \
+          --notes-file release_notes.md \
+          dist/*.tar.gz \
+          dist/*.whl || echo "Release may already exist or failed to create"
