@@ -1,7 +1,3 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "tabfix-tool"
 version = "1.0.0"
@@ -11,15 +7,14 @@ authors = [
 description = "Advanced tool for fixing tab/space indentation issues in code files"
 readme = "README.md"
 license = {text = "GNU General Public License v3.0"}
-requires-python = ">=3.7"
+requires-python = ">=3.8"  
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.8",  # убрали 3.7 от сюдава 😡😡😡😡😡
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
