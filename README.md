@@ -23,8 +23,8 @@ pip install git+https://github.com/hairpin01/tabfix.git
 ```
 ## From source
 `git clone https://github.com/alina/tabfix.git
-cd tabfix
-pip install -e .
+&& cd tabfix
+&& pip install -e .
 `
 ## Usage
 ```
