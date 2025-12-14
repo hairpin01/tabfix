@@ -8,15 +8,27 @@ import subprocess
 import shutil
 import fnmatch
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional, Set
+from typing import List, Tuple, Dict, Optional, Set, Any
 from datetime import datetime
+from collections import Counter
 
 try:
     from tqdm import tqdm
-
     HAS_TQDM = True
 except ImportError:
     HAS_TQDM = False
+
+try:
+    import chardet
+    HAS_CHARDET = True
+except ImportError:
+    HAS_CHARDET = False
+
+try:
+    from charset_normalizer import detect as charset_detect
+    HAS_CHARSET_NORMALIZER = True
+except ImportError:
+    HAS_CHARSET_NORMALIZER = False
 
 
 class Colors:
@@ -120,6 +132,351 @@ class GitignoreMatcher:
             return False
 
 
+class EncodingDetector:
+    def __init__(self, confidence_threshold: float = 0.8):
+        self.confidence_threshold = confidence_threshold
+
+    def detect_with_chardet(self, content: bytes) -> Optional[Tuple[str, float]]:
+        if HAS_CHARDET:
+            try:
+                result = chardet.detect(content)
+                if result['encoding'] and result['confidence'] > self.confidence_threshold:
+                    return result['encoding'], result['confidence']
+            except Exception:
+                pass
+
+        if HAS_CHARSET_NORMALIZER:
+            try:
+                result = charset_detect(content)
+                if result and result['encoding']:
+                    return result['encoding'], result['confidence']
+            except Exception:
+                pass
+
+        return None
+
+    def analyze_byte_patterns(self, content: bytes) -> str:
+        if len(content) < 4:
+            return 'utf-8'
+
+        if content.startswith(b'\xff\xfe'):
+            return 'utf-16-le'
+        elif content.startswith(b'\xfe\xff'):
+            return 'utf-16-be'
+        elif content.startswith(b'\xff\xfe\x00\x00'):
+            return 'utf-32-le'
+        elif content.startswith(b'\x00\x00\xfe\xff'):
+            return 'utf-32-be'
+
+        utf8_valid = 0
+        latin1_valid = 0
+        content_length = len(content)
+
+        i = 0
+        while i < min(content_length, 1000):
+            byte = content[i]
+
+            if byte < 128:
+                utf8_valid += 1
+            elif 194 <= byte <= 223 and i + 1 < content_length:
+                next_byte = content[i + 1]
+                if 128 <= next_byte <= 191:
+                    utf8_valid += 2
+                    i += 1
+            elif 224 <= byte <= 239 and i + 2 < content_length:
+                if (128 <= content[i + 1] <= 191 and 
+                    128 <= content[i + 2] <= 191):
+                    utf8_valid += 3
+                    i += 2
+            elif 240 <= byte <= 244 and i + 3 < content_length:
+                if (128 <= content[i + 1] <= 191 and 
+                    128 <= content[i + 2] <= 191 and
+                    128 <= content[i + 3] <= 191):
+                    utf8_valid += 4
+                    i += 3
+
+            latin1_valid += 1
+            i += 1
+
+        if utf8_valid > latin1_valid * 1.1:
+            return 'utf-8'
+        else:
+            return 'latin-1'
+
+    def get_encoding_for_region(self, filename: str) -> Optional[str]:
+        filename_lower = filename.lower()
+
+        if any(x in filename_lower for x in ['.ru.', '.rus.', 'russian']):
+            return 'cp1251'
+        elif any(x in filename_lower for x in ['.jp.', '.jpn.', 'japanese']):
+            return 'shift_jis'
+        elif any(x in filename_lower for x in ['.cn.', '.chs.', 'chinese']):
+            return 'gbk'
+        elif any(x in filename_lower for x in ['.tw.', '.cht.', 'traditional']):
+            return 'big5'
+
+        return None
+
+
+class FileProcessor:
+    def __init__(self, spaces_per_tab: int = 4):
+        self.spaces_per_tab = spaces_per_tab
+        self.processors = {
+            '.py': self.process_python,
+            '.js': self.process_javascript,
+            '.jsx': self.process_javascript,
+            '.ts': self.process_typescript,
+            '.tsx': self.process_typescript,
+            '.json': self.process_json,
+            '.yaml': self.process_yaml,
+            '.yml': self.process_yaml,
+            '.md': self.process_markdown,
+            '.markdown': self.process_markdown,
+            '.html': self.process_html,
+            '.htm': self.process_html,
+            '.css': self.process_css,
+            '.scss': self.process_scss,
+            '.sass': self.process_sass,
+            '.xml': self.process_xml,
+            '.svg': self.process_xml,
+            '.txt': self.process_text,
+            '.csv': self.process_csv,
+            '.ini': self.process_ini,
+            '.cfg': self.process_ini,
+            '.toml': self.process_toml,
+            '.sh': self.process_shell,
+            '.bash': self.process_shell,
+            '.zsh': self.process_shell,
+            '.dockerfile': self.process_docker,
+            'dockerfile': self.process_docker,
+            '.gitignore': self.process_gitignore,
+            '.editorconfig': self.process_editorconfig,
+        }
+
+    def process_by_extension(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        suffix = filepath.suffix.lower()
+        if filepath.name.lower() == 'dockerfile':
+            suffix = 'dockerfile'
+
+        processor = self.processors.get(suffix, self.process_generic)
+        return processor(content, filepath)
+
+    def process_python(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+
+        if lines and lines[0].startswith('#!'):
+            if 'python' in lines[0] and 'python3' not in lines[0]:
+                lines[0] = '#!/usr/bin/env python3'
+                changes.append("Fixed shebang to python3")
+
+        for i, line in enumerate(lines):
+            stripped = line.rstrip()
+            if line != stripped:
+                if line.strip().startswith('#') or not line.strip():
+                    lines[i] = stripped
+                    changes.append(f"Line {i+1}: Removed trailing spaces in comment")
+
+        return '\n'.join(lines), changes
+
+    def process_javascript(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        in_import_block = False
+        import_lines = []
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(('import ', 'export ', 'from ')):
+                in_import_block = True
+                import_lines.append((i, line))
+            elif stripped and not stripped.startswith(('//', '/*', '*', '`')):
+                in_import_block = False
+
+        if import_lines and len(import_lines) > 1:
+            max_length = max(len(line) for _, line in import_lines)
+            for idx, (line_num, line) in enumerate(import_lines):
+                if len(line) < max_length:
+                    lines[line_num] = line + ' ' * (max_length - len(line))
+                    changes.append(f"Line {line_num+1}: Aligned import")
+
+        return '\n'.join(lines), changes
+
+    def process_typescript(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_javascript(content, filepath)
+
+    def process_json(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        try:
+            parsed = json.loads(content)
+            formatted = json.dumps(
+                parsed, 
+                indent=self.spaces_per_tab, 
+                ensure_ascii=False,
+                sort_keys=False
+            )
+            if formatted != content:
+                changes.append("Formatted JSON")
+                return formatted, changes
+        except json.JSONDecodeError as e:
+            fixed = self.fix_json_issues(content)
+            if fixed != content:
+                changes.append(f"Fixed JSON syntax: {str(e)[:50]}")
+                return fixed, changes
+
+        return content, changes
+
+    def fix_json_issues(self, content: str) -> str:
+        fixed = content
+        lines = fixed.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.endswith(',') and not stripped.endswith('",'):
+                if i + 1 < len(lines):
+                    next_stripped = lines[i + 1].strip()
+                    if next_stripped in ('}', ']'):
+                        lines[i] = line.rstrip(',')
+        fixed = '\n'.join(lines)
+
+        in_string = False
+        escape_next = False
+        result = []
+        for char in fixed:
+            if escape_next:
+                result.append(char)
+                escape_next = False
+            elif char == '\\':
+                result.append(char)
+                escape_next = True
+            elif char == '"':
+                result.append(char)
+                in_string = not in_string
+            elif char == "'" and not in_string:
+                result.append('"')
+            else:
+                result.append(char)
+
+        return ''.join(result)
+
+    def process_yaml(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        try:
+            import yaml
+            yaml.safe_load(content)
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                stripped = line.rstrip()
+                if line != stripped:
+                    lines[i] = stripped
+                    changes.append(f"Line {i+1}: Removed trailing spaces")
+            return '\n'.join(lines), changes
+        except ImportError:
+            pass
+        return content, changes
+
+    def process_markdown(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        in_code_block = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('```') or stripped.startswith('~~~'):
+                in_code_block = not in_code_block
+                continue
+            if in_code_block:
+                continue
+
+            if stripped.startswith('#'):
+                hash_count = 0
+                while hash_count < len(stripped) and stripped[hash_count] == '#':
+                    hash_count += 1
+                if hash_count < len(stripped) and stripped[hash_count] != ' ':
+                    lines[i] = line.replace('#' * hash_count, '#' * hash_count + ' ', 1)
+                    changes.append(f"Line {i+1}: Fixed heading formatting")
+
+            if stripped.startswith(('- ', '* ', '+ ')) and len(stripped) > 2:
+                if stripped[2] == ' ':
+                    lines[i] = line.replace(stripped[:3], stripped[:2], 1)
+                    changes.append(f"Line {i+1}: Fixed list formatting")
+
+        return '\n'.join(lines), changes
+
+    def process_html(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            if '<br>' in line or '<hr>' in line:
+                lines[i] = line.replace('<br>', '<br/>').replace('<hr>', '<hr/>')
+                changes.append(f"Line {i+1}: Fixed self-closing tags")
+        return '\n'.join(lines), changes
+
+    def process_css(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_scss(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_sass(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_xml(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.rstrip()
+            if line != stripped:
+                lines[i] = stripped
+                changes.append(f"Line {i+1}: Removed trailing spaces")
+        return '\n'.join(lines), changes
+
+    def process_text(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_csv(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_ini(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.rstrip()
+            if line != stripped:
+                lines[i] = stripped
+                changes.append(f"Line {i+1}: Removed trailing spaces")
+        return '\n'.join(lines), changes
+
+    def process_toml(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_shell(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        if lines and lines[0].startswith('#!'):
+            if 'bash' in lines[0] and '-e' not in lines[0]:
+                lines[0] = '#!/usr/bin/env bash'
+                changes.append("Standardized bash shebang")
+        return '\n'.join(lines), changes
+
+    def process_docker(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_gitignore(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_editorconfig(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        return self.process_generic(content, filepath)
+
+    def process_generic(self, content: str, filepath: Path) -> Tuple[str, List[str]]:
+        changes = []
+        lines = content.split('\n')
+        for i, line in enumerate(lines):
+            stripped = line.rstrip()
+            if line != stripped:
+                lines[i] = stripped
+                changes.append(f"Line {i+1}: Removed trailing spaces")
+        return '\n'.join(lines), changes
+
 
 class TabFix:
     def __init__(self, spaces_per_tab: int = 4):
@@ -133,7 +490,10 @@ class TabFix:
             "json_formatted": 0,
             "mixed_indent_files": 0,
             "files_skipped": 0,
+            "binary_files_skipped": 0,
         }
+        self.encoding_detector = EncodingDetector()
+        self.file_processor = FileProcessor(spaces_per_tab)
 
     def remove_bom(self, content: bytes) -> Tuple[bytes, bool]:
         if content.startswith(b"\xef\xbb\xbf"):
@@ -286,10 +646,9 @@ class TabFix:
 
         common_indent = None
         if space_counts:
-            from collections import Counter
-
             counter = Counter(space_counts)
-            common_indent = counter.most_common(1)[0][0]
+            if counter:
+                common_indent = counter.most_common(1)[0][0]
 
         return {
             "uses_tabs": tab_lines > 0,
@@ -342,9 +701,155 @@ class TabFix:
             changes.append("Added final newline")
         return content, changes
 
+    def detect_encoding_and_decode(self, content: bytes, default_encoding: str = 'utf-8') -> Tuple[str, str, bool]:
+        def try_decode(data: bytes, encoding: str) -> Optional[str]:
+            try:
+                return data.decode(encoding)
+            except (UnicodeDecodeError, LookupError):
+                return None
+
+        if content.startswith(b'\xef\xbb\xbf'):
+            decoded = try_decode(content[3:], 'utf-8')
+            if decoded is not None:
+                return decoded, 'utf-8-sig', True
+
+        decoded = try_decode(content, 'utf-8')
+        if decoded is not None:
+            return decoded, 'utf-8', True
+
+        chardet_result = self.encoding_detector.detect_with_chardet(content)
+        if chardet_result:
+            encoding, confidence = chardet_result
+            decoded = try_decode(content, encoding)
+            if decoded is not None:
+                return decoded, encoding, confidence > 0.8
+
+        common_encodings = [
+            'utf-16', 'utf-16-be', 'utf-16-le',
+            'cp1251', 'cp1252', 'iso-8859-1', 'iso-8859-2',
+            'koi8-r', 'cp866', 'mac_cyrillic',
+            'shift_jis', 'euc-jp', 'gbk', 'big5'
+        ]
+
+        for encoding in common_encodings:
+            decoded = try_decode(content, encoding)
+            if decoded is not None:
+                if self.looks_like_valid_text(decoded):
+                    return decoded, encoding, False
+
+        try:
+            return content.decode(default_encoding, errors='replace'), default_encoding, False
+        except (UnicodeDecodeError, LookupError):
+            return content.decode('latin-1', errors='replace'), 'latin-1', False
+
+    def looks_like_valid_text(self, text: str, threshold: float = 0.7) -> bool:
+        if not text:
+            return False
+
+        printable = sum(1 for char in text if char.isprintable() or char in '\n\r\t')
+        ratio = printable / len(text)
+        control_chars = sum(1 for char in text if ord(char) < 32 and char not in '\n\r\t')
+        control_ratio = control_chars / len(text)
+
+        return ratio > threshold and control_ratio < 0.1
+
+    def is_likely_binary(self, content: bytes, filename: str = None) -> bool:
+        if filename:
+            binary_extensions = {
+                '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp',
+                '.pdf', '.zip', '.tar', '.gz', '.bz2', '.xz', '.rar', '.7z',
+                '.exe', '.dll', '.so', '.dylib', '.class',
+                '.pyc', '.pyo', '.pyd', '.o', '.obj', '.a', '.lib',
+                '.mp3', '.mp4', '.avi', '.mkv', '.mov',
+                '.ttf', '.otf', '.woff', '.woff2',
+                '.db', '.sqlite', '.mdb'
+            }
+            if any(filename.lower().endswith(ext) for ext in binary_extensions):
+                return True
+
+        sample = content[:1024] if len(content) > 1024 else content
+        if b'\x00' in sample:
+            return True
+
+        binary_signatures = [
+            (b'\x89PNG\r\n\x1a\n', 0),
+            (b'\xff\xd8\xff', 0),
+            (b'GIF87a', 0),
+            (b'GIF89a', 0),
+            (b'%PDF', 0),
+            (b'PK\x03\x04', 0),
+            (b'PK\x05\x06', 0),
+            (b'PK\x07\x08', 0),
+            (b'\x1f\x8b\x08', 0),
+            (b'BZh', 0),
+            (b'\xfd7zXZ', 0),
+            (b'\x37\x7a\xbc\xaf\x27\x1c', 0),
+            (b'MZ', 0),
+            (b'\x7fELF', 0),
+        ]
+
+        for signature, offset in binary_signatures:
+            if sample[offset:offset + len(signature)] == signature:
+                return True
+
+        return False
+
+    def is_binary_content(self, text: str, encoding: str = 'utf-8') -> bool:
+        if not text:
+            return False
+
+        non_printable = 0
+        for char in text[:1000]:
+            if not char.isprintable() and char not in '\n\r\t\f\v':
+                non_printable += 1
+
+        return (non_printable / min(len(text), 1000)) > 0.3
+
+    def summarize_changes(self, changes: List[str]) -> str:
+        categories = Counter()
+        for change in changes:
+            if 'trailing spaces' in change.lower():
+                categories['trailing_spaces'] += 1
+            elif 'tab' in change.lower() or 'indentation' in change.lower():
+                categories['indentation'] += 1
+            elif 'shebang' in change.lower():
+                categories['shebang'] += 1
+            elif 'json' in change.lower():
+                categories['json'] += 1
+            elif 'import' in change.lower():
+                categories['imports'] += 1
+            elif 'heading' in change.lower():
+                categories['markdown'] += 1
+            elif 'bom' in change.upper():
+                categories['bom'] += 1
+            else:
+                categories['other'] += 1
+
+        parts = []
+        if categories.get('trailing_spaces'):
+            parts.append(f"{categories['trailing_spaces']} trailing spaces")
+        if categories.get('indentation'):
+            parts.append(f"{categories['indentation']} indentation fixes")
+        if categories.get('bom'):
+            parts.append(f"{categories['bom']} BOM removals")
+        if categories.get('json'):
+            parts.append(f"{categories['json']} JSON formats")
+        if categories.get('imports'):
+            parts.append(f"{categories['imports']} import alignments")
+        if categories.get('shebang'):
+            parts.append(f"{categories['shebang']} shebang fixes")
+        if categories.get('markdown'):
+            parts.append(f"{categories['markdown']} markdown fixes")
+        if categories.get('other'):
+            parts.append(f"{categories['other']} other changes")
+
+        return ', '.join(parts) if parts else "no changes"
+
     def process_file(
         self, filepath: Path, args, gitignore_matcher: Optional[GitignoreMatcher] = None
     ) -> bool:
+        self.stats["files_processed"] += 1
+
         if gitignore_matcher and gitignore_matcher.should_ignore(filepath):
             if args.verbose:
                 print_color(f"Skipped (gitignore): {filepath}", Colors.DIM)
@@ -356,54 +861,93 @@ class TabFix:
                 return False
 
             file_size = filepath.stat().st_size
-            if file_size > 10 * 1024 * 1024:
+            if file_size > args.max_file_size:
                 if args.verbose:
-                    print_color(
-                        f"Skipped (large file): {filepath} ({file_size / (1024*1024):.1f} MB)",
-                        Colors.YELLOW,
-                    )
+                    size_mb = file_size / (1024 * 1024)
+                    print_color(f"Skipped (large file): {filepath} ({size_mb:.1f} MB)", Colors.YELLOW)
+                self.stats["files_skipped"] += 1
                 return False
 
             with open(filepath, "rb") as f:
                 raw_content = f.read()
-        except Exception as e:
+        except (IOError, OSError, PermissionError) as e:
             if not args.quiet:
                 print_color(f"Error reading {filepath}: {e}", Colors.RED)
+            self.stats["files_skipped"] += 1
             return False
 
-        original_raw = raw_content
+        if args.skip_binary and self.is_likely_binary(raw_content, str(filepath)):
+            if args.verbose:
+                print_color(f"Skipped binary file: {filepath}", Colors.DIM)
+            self.stats["binary_files_skipped"] += 1
+            return False
+
+        had_bom = raw_content.startswith(b"\xef\xbb\xbf")
+        if args.remove_bom and had_bom:
+            raw_content = raw_content[3:]
+
+        if args.force_encoding:
+            try:
+                content = raw_content.decode(args.force_encoding)
+                encoding = args.force_encoding
+                encoding_confident = True
+            except (UnicodeDecodeError, LookupError) as e:
+                if not args.quiet:
+                    print_color(f"Failed to decode {filepath} with {args.force_encoding}: {e}", Colors.RED)
+                self.stats["files_skipped"] += 1
+                return False
+        else:
+            content, encoding, encoding_confident = self.detect_encoding_and_decode(
+                raw_content,
+                default_encoding=args.fallback_encoding
+            )
+
+            if not encoding_confident and args.warn_encoding:
+                print_color(f"Warning: Encoding detection uncertain for {filepath} (detected: {encoding})", Colors.YELLOW)
+
+        if args.skip_binary and self.is_binary_content(content, encoding):
+            if args.verbose:
+                print_color(f"Skipped binary-like content: {filepath}", Colors.DIM)
+            self.stats["binary_files_skipped"] += 1
+            return False
 
         changes = []
-        content = raw_content.decode("utf-8-sig")
-        had_bom = raw_content.startswith(b"\xef\xbb\xbf")
-
-        if args.remove_bom and had_bom:
+        if had_bom and args.remove_bom:
             changes.append("Removed BOM")
 
-        if args.format_json and filepath.suffix.lower() == ".json":
-            formatted, changed = self.format_json(content)
-            if changed:
-                content = formatted
-                changes.append("Formatted JSON")
-                self.stats["json_formatted"] += 1
+        if args.smart_processing:
+            processed_content, type_changes = self.file_processor.process_by_extension(content, filepath)
+            changes.extend(type_changes)
+        else:
+            processed_content = content
 
-        indent_changes = []
         if args.fix_mixed:
-            content, indent_changes = self.fix_mixed_indentation(content)
-            changes.extend(indent_changes)
-            if indent_changes:
-                self.stats["tabs_replaced"] += len(indent_changes)
-                self.stats["lines_fixed"] += len(indent_changes)
+            fixed_content, indent_changes = self.fix_mixed_indentation(processed_content)
+            if fixed_content != processed_content:
+                processed_content = fixed_content
+                changes.extend(indent_changes)
+                if indent_changes:
+                    self.stats["tabs_replaced"] += len(indent_changes)
+                    self.stats["lines_fixed"] += len(indent_changes)
 
         if args.fix_trailing:
-            content, trailing_changes = self.fix_trailing_spaces(content)
-            changes.extend(trailing_changes)
-            if trailing_changes:
-                self.stats["lines_fixed"] += len(trailing_changes)
+            fixed_content, trailing_changes = self.fix_trailing_spaces(processed_content)
+            if fixed_content != processed_content:
+                processed_content = fixed_content
+                changes.extend(trailing_changes)
+                if trailing_changes:
+                    self.stats["lines_fixed"] += len(trailing_changes)
 
         if args.final_newline:
-            content, newline_changes = self.ensure_final_newline(content)
+            processed_content, newline_changes = self.ensure_final_newline(processed_content)
             changes.extend(newline_changes)
+
+        if args.format_json and filepath.suffix.lower() == ".json":
+            formatted, changed = self.format_json(processed_content)
+            if changed:
+                processed_content = formatted
+                changes.append("Formatted JSON")
+                self.stats["json_formatted"] += 1
 
         if not changes:
             return False
@@ -411,17 +955,29 @@ class TabFix:
         if args.interactive and not self.interactive_confirm(filepath, changes):
             return False
 
-        new_raw = content.encode("utf-8")
-        if args.keep_bom and had_bom:
-            new_raw = self.add_bom(new_raw)
+        if args.remove_bom and had_bom:
+            output_encoding = 'utf-8'
+        elif args.keep_bom and had_bom:
+            output_encoding = 'utf-8-sig'
+        elif args.force_encoding:
+            output_encoding = args.force_encoding
+        else:
+            output_encoding = encoding
 
-        if new_raw == original_raw:
+        try:
+            new_raw = processed_content.encode(output_encoding)
+        except (UnicodeEncodeError, LookupError) as e:
+            if not args.quiet:
+                print_color(f"Failed to encode {filepath} to {output_encoding}: {e}", Colors.RED)
+            return False
+
+        if new_raw == raw_content:
             return False
 
         if args.backup:
             backup_path = filepath.with_suffix(filepath.suffix + ".bak")
             with open(backup_path, "wb") as f:
-                f.write(original_raw)
+                f.write(raw_content)
 
         if not args.dry_run:
             with open(filepath, "wb") as f:
@@ -432,9 +988,7 @@ class TabFix:
 
         self.stats["files_changed"] += 1
         if args.verbose:
-            change_summary = ", ".join([c.split(":")[0] for c in changes[:3]])
-            if len(changes) > 3:
-                change_summary += f" and {len(changes) - 3} more"
+            change_summary = self.summarize_changes(changes)
             print_color(f"Fixed: {filepath} ({change_summary})", Colors.GREEN)
 
         return True
@@ -502,6 +1056,11 @@ class TabFix:
                 f"Files skipped:        ",
                 self.stats["files_skipped"],
                 Colors.YELLOW if self.stats["files_skipped"] > 0 else Colors.DIM,
+            ),
+            (
+                f"Binary files skipped: ",
+                self.stats["binary_files_skipped"],
+                Colors.YELLOW if self.stats["binary_files_skipped"] > 0 else Colors.DIM,
             ),
             (
                 f"Tabs replaced:        ",
@@ -583,6 +1142,28 @@ Examples:
         "--no-gitignore", action="store_true", help="Do not use .gitignore patterns"
     )
 
+    encoding_group = parser.add_argument_group('Encoding and binary file handling')
+    encoding_group.add_argument('--skip-binary', action='store_true', default=True,
+                              help='Skip files that appear to be binary (default: True)')
+    encoding_group.add_argument('--no-skip-binary', action='store_false', dest='skip_binary',
+                              help='Process files even if they appear to be binary')
+    encoding_group.add_argument('--force-encoding', metavar='ENCODING',
+                              help='Force specific encoding (skip auto-detection)')
+    encoding_group.add_argument('--fallback-encoding', default='latin-1',
+                              help='Fallback encoding when detection fails (default: latin-1)')
+    encoding_group.add_argument('--warn-encoding', action='store_true',
+                              help='Warn when encoding detection is uncertain')
+    encoding_group.add_argument('--max-file-size', type=int, default=10*1024*1024,
+                              help='Maximum file size to process in bytes (default: 10MB)')
+
+    filetype_group = parser.add_argument_group('File type specific processing')
+    filetype_group.add_argument('--smart-processing', action='store_true', default=True,
+                              help='Enable smart processing for different file types (default: True)')
+    filetype_group.add_argument('--no-smart-processing', action='store_false', dest='smart_processing',
+                              help='Disable smart processing for different file types')
+    filetype_group.add_argument('--preserve-quotes', action='store_true',
+                              help='Preserve original string quotes in code files')
+
     parser.add_argument(
         "--diff",
         nargs=2,
@@ -633,7 +1214,7 @@ Examples:
 
     if args.no_color:
         global Colors
-        Colors = type("Colors", (), {k: "" for k in dir(Colors) if not k.startswith("_")})
+        Colors = type("Colors", (), {k: "" for k in dir(Colors) if not k.startswith("_")})()
 
     if args.remove_bom and args.keep_bom:
         print_color("Cannot use both --remove-bom and --keep-bom", Colors.RED)
