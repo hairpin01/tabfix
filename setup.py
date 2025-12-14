@@ -2,14 +2,14 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="tabfix",
+    name="tabfix-tool",
     version="1.0.0",
     author="hairpin01",
     author_email="alichka240784@gmail.com",
     description="Advanced tool for fixing tab/space indentation issues",
     long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/alina/tabfix",
+    url="https://github.com/hairpin01/tabfix",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     classifiers=[
