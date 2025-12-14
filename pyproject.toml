@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tabfix"
+version = "1.0.0"
+authors = [
+    {name = "hairpin01", email = "alichka240784@gmail.com"}
+]
+description = "Advanced tool for fixing tab/space indentation issues in code files"
+readme = "README.md"
+license = {text = "GNU General Public License v3.0"}
+requires-python = ">=3.7"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.7",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Text Processing :: Filters",
+    "Topic :: Utilities",
+]
+keywords = ["indentation", "tabs", "spaces", "code", "formatter", "git"]
+dependencies = [
+    "tqdm>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "twine>=4.0.0",
+    "build>=0.10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hairpin01/tabfix"
+Documentation = "https://github.com/hairpin01/tabfix#readme"
+Repository = "https://github.com/hairpin01/tabfix"
+Issues = "https://github.com/hairpin01/tabfix/issues"
+Changelog = "https://github.com/hairpin01/tabfix/releases"
+
+[project.scripts]
+tabfix = "tabfix.__main__:main"
+
+[project.entry-points."tabfix_plugins"]
+git = "tabfix.git_utils:GitignoreMatcher"
+colors = "tabfix.color_utils:Colors"
