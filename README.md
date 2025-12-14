@@ -21,3 +21,25 @@ pip install tabfix-tool
 # Or directly from GitHub
 pip install git+https://github.com/hairpin01/tabfix.git
 ```
+## From source
+`git clone https://github.com/alina/tabfix.git
+cd tabfix
+pip install -e .
+`
+## Usage
+```
+# Basic usage
+tabfix file.py
+```
+```
+# Recursive processing
+tabfix --recursive src/
+```
+```
+# Fix multiple issues
+tabfix --all --progress .
+```
+```
+# Check without modifying
+tabfix --check-mixed --recursive .
+```
