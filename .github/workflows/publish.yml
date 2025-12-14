@@ -11,7 +11,7 @@ on:
         default: 'patch'
 
 env:
-  PYPI_PROJECT_NAME: "tabfix"
+  PYPI_PROJECT_NAME: "tabfix-tool"
 
 jobs:
   test:
