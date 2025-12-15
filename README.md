@@ -25,6 +25,10 @@ or via installer
 ```shell
 curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabfix/installer.py | python3
 ```
+> [!TIP]
+> to install the unifmt package, see [optional](https://github.com/hairpin01/tabfix/edit/main/README.md#install-optional-unifmt-or-devencodingfull)
+
+
 ## From source
 `git clone https://github.com/hairpin01/tabfix.git
 && cd tabfix
@@ -46,4 +50,9 @@ tabfix --all --progress .
 ```
 # Check without modifying
 tabfix --check-mixed --recursive .
+```
+
+## install optional unifmt or dev/encoding/full
+```
+pip install tabfix-tool[unifmt] # or {optional}
 ```
