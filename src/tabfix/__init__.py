@@ -1,4 +1,21 @@
-__author__ = "hairpin01"
-__license__ = "GNU General Public License v3.0"
-__version__ = "1.2.0"
-__all__ = ["TabFix", "Colors", "print_color", "TabFixConfig", "ConfigLoader"]
+from .api import (
+    TabFixAPI,
+    TabFixConfig,
+    fix_string,
+    fix_file,
+    check_file,
+    detect_indentation,
+    create_config_file,
+)
+
+__version__ = "1.2.1"
+
+__all__ = [
+    "TabFixAPI",
+    "TabFixConfig",
+    "fix_string",
+    "fix_file",
+    "check_file",
+    "detect_indentation",
+    "create_config_file",
+]
