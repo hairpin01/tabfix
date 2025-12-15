@@ -561,7 +561,87 @@ class TabFix:
             "total_lines_file2": len(lines2),
             "indent_matches": len(differences) == 0,
         }
-
+        
+        
+    def process_file_with_changes(self, filepath: Path, args, 
+                                gitignore_matcher: Optional[GitignoreMatcher] = None) -> Tuple[bool, List[str]]:
+        if gitignore_matcher and gitignore_matcher.should_ignore(filepath):
+            self.stats["files_skipped"] += 1
+            return False, []
+    
+        try:
+            if not filepath.is_file():
+                return False, []
+    
+            file_size = filepath.stat().st_size
+            if file_size > args.max_file_size:
+                return False, []
+    
+            with open(filepath, "rb") as f:
+                raw_content = f.read()
+        except Exception:
+            return False, []
+    
+        original_raw = raw_content
+        changes = []
+        content = raw_content.decode("utf-8-sig")
+        had_bom = raw_content.startswith(b"\xef\xbb\xbf")
+    
+        if args.remove_bom and had_bom:
+            changes.append("Removed BOM")
+    
+        if args.format_json and filepath.suffix.lower() == ".json":
+            formatted, changed = self.format_json(content)
+            if changed:
+                content = formatted
+                changes.append("Formatted JSON")
+                self.stats["json_formatted"] += 1
+    
+        if args.fix_mixed:
+            content, indent_changes = self.fix_mixed_indentation(content)
+            changes.extend(indent_changes)
+            if indent_changes:
+                self.stats["tabs_replaced"] += len(indent_changes)
+                self.stats["lines_fixed"] += len(indent_changes)
+    
+        if args.fix_trailing:
+            content, trailing_changes = self.fix_trailing_spaces(content)
+            changes.extend(trailing_changes)
+            if trailing_changes:
+                self.stats["lines_fixed"] += len(trailing_changes)
+    
+        if args.final_newline:
+            content, newline_changes = self.ensure_final_newline(content)
+            changes.extend(newline_changes)
+    
+        if not changes:
+            return False, []
+    
+        if args.interactive and not self.interactive_confirm(filepath, changes):
+            return False, []
+    
+        new_raw = content.encode("utf-8")
+        if args.keep_bom and had_bom:
+            new_raw = self.add_bom(new_raw)
+    
+        if new_raw == original_raw:
+            return False, []
+    
+        if args.backup and not args.dry_run:
+            backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+            with open(backup_path, "wb") as f:
+                f.write(original_raw)
+    
+        if not args.dry_run:
+            with open(filepath, "wb") as f:
+                f.write(new_raw)
+    
+            if had_bom and args.remove_bom:
+                self.stats["bom_removed"] += 1
+    
+        self.stats["files_changed"] += 1
+        return True, changes
+            
     def interactive_confirm(self, filepath: Path, changes: List[str]) -> bool:
         if not changes:
             return True
@@ -1041,92 +1121,64 @@ class TabFix:
         if args.quiet:
             return
 
-
-        if self.stats["files_processed"] == 0:
-            if not args.quiet:
-                print_color("No files to process.", Colors.YELLOW)
-            return
-
-        if self.stats["files_changed"] == 0 and not args.verbose:
-            if not args.quiet:
-                print_color("All files are already properly formatted.", Colors.GREEN)
-            return
-
-
+        print_color(f"\n{'='*60}", Colors.CYAN)
         print_color("PROCESSING STATISTICS", Colors.BOLD + Colors.CYAN)
+        print_color(f"{'='*60}", Colors.CYAN)
 
-        stats_items = []
-
-        if self.stats["files_processed"] > 0 or args.verbose:
-            stats_items.append((f"Files processed:      ", self.stats["files_processed"], Colors.BLUE))
-
-        if self.stats["files_changed"] > 0 or args.verbose:
-            stats_items.append((
+        stats_items = [
+            (f"Files processed:      ", self.stats["files_processed"], Colors.BLUE),
+            (
                 f"Files changed:        ",
                 self.stats["files_changed"],
                 Colors.GREEN if self.stats["files_changed"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["files_skipped"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"Files skipped:        ",
                 self.stats["files_skipped"],
                 Colors.YELLOW if self.stats["files_skipped"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["binary_files_skipped"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"Binary files skipped: ",
                 self.stats["binary_files_skipped"],
                 Colors.YELLOW if self.stats["binary_files_skipped"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["tabs_replaced"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"Tabs replaced:        ",
                 self.stats["tabs_replaced"],
                 Colors.GREEN if self.stats["tabs_replaced"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["lines_fixed"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"Lines fixed:          ",
                 self.stats["lines_fixed"],
                 Colors.GREEN if self.stats["lines_fixed"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["bom_removed"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"BOM markers removed:  ",
                 self.stats["bom_removed"],
                 Colors.MAGENTA if self.stats["bom_removed"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["json_formatted"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"JSON files formatted: ",
                 self.stats["json_formatted"],
                 Colors.MAGENTA if self.stats["json_formatted"] > 0 else Colors.DIM,
-            ))
-
-        if self.stats["mixed_indent_files"] > 0 or args.verbose:
-            stats_items.append((
+            ),
+            (
                 f"Mixed indent files:   ",
                 self.stats["mixed_indent_files"],
                 Colors.RED if self.stats["mixed_indent_files"] > 0 else Colors.DIM,
-            ))
+            ),
+        ]
 
-        if stats_items:
-            for label, value, color in stats_items:
-                print_color(f"{label}{value:,}", color)
+        for label, value, color in stats_items:
+            print_color(f"{label}{value:,}", color)
 
-            if self.stats["files_processed"] > 0:
-                changed_percent = (self.stats["files_changed"] / self.stats["files_processed"]) * 100
-                if changed_percent > 0 or args.verbose:
-                    print_color(
-                        f"\n{changed_percent:.1f}% of files were modified",
-                        Colors.GREEN if changed_percent > 0 else Colors.DIM,
-                    )
+        if self.stats["files_processed"] > 0:
+            changed_percent = (self.stats["files_changed"] / self.stats["files_processed"]) * 100
+            print_color(
+                f"\n{changed_percent:.1f}% of files were modified",
+                Colors.GREEN if changed_percent > 0 else Colors.DIM,
+            )
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1324,7 +1376,10 @@ Examples:
 
     if not processed_files:
         if not args.quiet:
-            print_color("No files to process after applying .gitignore", Colors.YELLOW)
+            if args.paths and args.paths != ["."]:
+                print_color(f"No matching files found in: {', '.join(args.paths)}", Colors.YELLOW)
+            else:
+                print_color("No files to process in current directory.", Colors.YELLOW)
         return
 
     if args.progress and HAS_TQDM and not args.interactive:
