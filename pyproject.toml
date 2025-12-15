@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tabfix-tool"
-version = "1.2.2"
+version = "1.2.0"
 authors = [
     {name = "hairpin01", email = "alichka240784@gmail.com"}
 ]
-description = "Advanced tool for fixing tab/space indentation with universal formatter"
+description = "Advanced tool for fixing tab/space indentation with configuration support"
 readme = "README.md"
 license = {text = "GNU General Public License v3.0"}
 requires-python = ">=3.8"
@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: Text Processing :: Filters",
     "Topic :: Utilities",
 ]
-keywords = ["indentation", "tabs", "spaces", "code", "formatter", "git", "unifmt"]
+keywords = ["indentation", "tabs", "spaces", "code", "formatter", "git", "pre-commit"]
 dependencies = [
     "tqdm>=4.0.0",
 ]
@@ -46,6 +46,8 @@ dev = [
 encoding = ["charset-normalizer>=3.0.0"]
 full = ["charset-normalizer>=3.0.0", "binaryornot>=0.4.4"]
 unifmt = ["tomli>=1.2.0; python_version<'3.11'", "tomli-w>=1.0.0"]
+yaml = ["PyYAML>=6.0"]
+config = ["tomli>=1.2.0; python_version<'3.11'", "tomli-w>=1.0.0", "PyYAML>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/hairpin01/tabfix"
