@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import subprocess
+import os
 from typing import Optional
 
 
@@ -21,9 +22,21 @@ def print_color(text: str, color: str = Colors.END, end: str = "\n"):
         print(text, end=end)
 
 
+def is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def check_tabfix_installed() -> bool:
+    try:
+        subprocess.run([sys.executable, "-c", "import tabfix"], 
+                      capture_output=True, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def run_command(cmd: str) -> bool:
     try:
-        print_color(f"Running: {cmd}", Colors.CYAN)
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -40,90 +53,65 @@ def run_command(cmd: str) -> bool:
         return False
 
 
-def check_pip_installed() -> bool:
-    try:
-        subprocess.run([sys.executable, "-m", "pip", "--version"], 
-                      capture_output=True, check=True)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
-
-
-def install_from_pypi() -> bool:
-    return run_command(f"{sys.executable} -m pip install tabfix-tool")
-
-
-def install_from_git() -> bool:
-    return run_command(f"{sys.executable} -m pip install git+https://github.com/hairpin01/tabfix.git")
-
-
-def install_editable() -> bool:
-    return run_command(f"{sys.executable} -m pip install -e .")
-
-
-def clone_and_install() -> bool:
-    return run_command("git clone https://github.com/hairpin01/tabfix.git && cd tabfix && pip install -e .")
-
-
-def check_installation() -> bool:
-    try:
-        subprocess.run([sys.executable, "-c", "import tabfix"], 
-                      capture_output=True, check=True)
-        print_color("✓ tabfix is installed and importable", Colors.GREEN)
-        
-        subprocess.run(["tabfix", "--version"], capture_output=True, check=True)
-        print_color("✓ tabfix CLI is available", Colors.GREEN)
-        return True
-    except subprocess.CalledProcessError:
-        print_color("✗ tabfix is not installed or not importable", Colors.RED)
-        return False
+def install_or_update() -> bool:
+    if check_tabfix_installed():
+        print_color("Updating tabfix from PyPI...", Colors.BLUE)
+        return run_command(f"{sys.executable} -m pip install --upgrade tabfix-tool")
+    else:
+        print_color("Installing tabfix from PyPI...", Colors.BLUE)
+        return run_command(f"{sys.executable} -m pip install tabfix-tool")
 
 
 def main():
     print_color("tabfix package installer", Colors.BOLD + Colors.CYAN)
     print_color("=" * 40, Colors.CYAN)
     
-    if not check_pip_installed():
-        print_color("pip is not installed. Please install pip first.", Colors.RED)
-        sys.exit(1)
-    
-    methods = {
-        "1": ("Install from PyPI", install_from_pypi),
-        "2": ("Install from GitHub", install_from_git),
-        "3": ("Install editable from current directory", install_editable),
-        "4": ("Clone from GitHub and install", clone_and_install),
-        "5": ("Check current installation", check_installation),
-    }
-    
-    print_color("\nInstallation methods:", Colors.BOLD)
-    for key, (description, _) in methods.items():
-        print_color(f"{key}. {description}")
-    
-    if len(sys.argv) > 1:
-        choice = sys.argv[1]
-        print_color(f"\nUsing command line argument: {choice}", Colors.BLUE)
+    if not is_interactive():
+        print_color("Non-interactive mode detected", Colors.BLUE)
+        success = install_or_update()
     else:
+        print_color("\nInstallation methods:", Colors.BOLD)
+        print_color("1. Install/update from PyPI (recommended)")
+        print_color("2. Install from GitHub")
+        print_color("3. Install editable from current directory")
+        print_color("4. Clone from GitHub and install")
+        print_color("5. Check current installation")
+        
         try:
             choice = input("\nSelect method (1-5): ").strip()
         except (EOFError, KeyboardInterrupt):
             print_color("\nInstallation cancelled.", Colors.YELLOW)
             sys.exit(0)
-    
-    if choice not in methods:
-        print_color("Invalid choice.", Colors.RED)
-        sys.exit(1)
-    
-    description, installer_func = methods[choice]
-    print_color(f"\n{description}...", Colors.BLUE)
-    
-    success = installer_func()
+        
+        if choice == "1":
+            success = install_or_update()
+        elif choice == "2":
+            print_color("Installing from GitHub...", Colors.BLUE)
+            success = run_command(f"{sys.executable} -m pip install git+https://github.com/hairpin01/tabfix.git")
+        elif choice == "3":
+            print_color("Installing editable from current directory...", Colors.BLUE)
+            success = run_command(f"{sys.executable} -m pip install -e .")
+        elif choice == "4":
+            print_color("Cloning and installing from GitHub...", Colors.BLUE)
+            success = run_command("git clone https://github.com/hairpin01/tabfix.git && cd tabfix && pip install -e .")
+        elif choice == "5":
+            print_color("Checking installation...", Colors.BLUE)
+            success = check_tabfix_installed()
+            if success:
+                print_color("✓ tabfix is installed", Colors.GREEN)
+            else:
+                print_color("✗ tabfix is not installed", Colors.RED)
+            return success
+        else:
+            print_color("Invalid choice.", Colors.RED)
+            sys.exit(1)
     
     if success:
         print_color("\n✓ Success!", Colors.GREEN + Colors.BOLD)
-        if choice != "5":
-            print_color("\nUsage:", Colors.CYAN)
-            print_color("  tabfix [options] <file>")
-            print_color("  tabfix --help")
+        print_color("\nUsage:", Colors.CYAN)
+        print_color("  tabfix [options] <file>")
+        print_color("  tabfix --help")
+        return True
     else:
         print_color("\n✗ Failed.", Colors.RED)
         sys.exit(1)
