@@ -23,7 +23,7 @@ pip install git+https://github.com/hairpin01/tabfix.git
 ```
 or via installer
 ```shell
-curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/tags/v1.0.1/src/tabfix/installer.py | python3
+curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabfix/installer.py | python3
 ```
 ## From source
 `git clone https://github.com/hairpin01/tabfix.git
