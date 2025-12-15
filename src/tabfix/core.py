@@ -1041,64 +1041,92 @@ class TabFix:
         if args.quiet:
             return
 
-        print_color(f"\n{'='*60}", Colors.CYAN)
-        print_color("PROCESSING STATISTICS", Colors.BOLD + Colors.CYAN)
-        print_color(f"{'='*60}", Colors.CYAN)
 
-        stats_items = [
-            (f"Files processed:      ", self.stats["files_processed"], Colors.BLUE),
-            (
+        if self.stats["files_processed"] == 0:
+            if not args.quiet:
+                print_color("No files to process.", Colors.YELLOW)
+            return
+
+        if self.stats["files_changed"] == 0 and not args.verbose:
+            if not args.quiet:
+                print_color("All files are already properly formatted.", Colors.GREEN)
+            return
+
+
+        print_color("PROCESSING STATISTICS", Colors.BOLD + Colors.CYAN)
+
+        stats_items = []
+
+        if self.stats["files_processed"] > 0 or args.verbose:
+            stats_items.append((f"Files processed:      ", self.stats["files_processed"], Colors.BLUE))
+
+        if self.stats["files_changed"] > 0 or args.verbose:
+            stats_items.append((
                 f"Files changed:        ",
                 self.stats["files_changed"],
                 Colors.GREEN if self.stats["files_changed"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["files_skipped"] > 0 or args.verbose:
+            stats_items.append((
                 f"Files skipped:        ",
                 self.stats["files_skipped"],
                 Colors.YELLOW if self.stats["files_skipped"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["binary_files_skipped"] > 0 or args.verbose:
+            stats_items.append((
                 f"Binary files skipped: ",
                 self.stats["binary_files_skipped"],
                 Colors.YELLOW if self.stats["binary_files_skipped"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["tabs_replaced"] > 0 or args.verbose:
+            stats_items.append((
                 f"Tabs replaced:        ",
                 self.stats["tabs_replaced"],
                 Colors.GREEN if self.stats["tabs_replaced"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["lines_fixed"] > 0 or args.verbose:
+            stats_items.append((
                 f"Lines fixed:          ",
                 self.stats["lines_fixed"],
                 Colors.GREEN if self.stats["lines_fixed"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["bom_removed"] > 0 or args.verbose:
+            stats_items.append((
                 f"BOM markers removed:  ",
                 self.stats["bom_removed"],
                 Colors.MAGENTA if self.stats["bom_removed"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["json_formatted"] > 0 or args.verbose:
+            stats_items.append((
                 f"JSON files formatted: ",
                 self.stats["json_formatted"],
                 Colors.MAGENTA if self.stats["json_formatted"] > 0 else Colors.DIM,
-            ),
-            (
+            ))
+
+        if self.stats["mixed_indent_files"] > 0 or args.verbose:
+            stats_items.append((
                 f"Mixed indent files:   ",
                 self.stats["mixed_indent_files"],
                 Colors.RED if self.stats["mixed_indent_files"] > 0 else Colors.DIM,
-            ),
-        ]
+            ))
 
-        for label, value, color in stats_items:
-            print_color(f"{label}{value:,}", color)
+        if stats_items:
+            for label, value, color in stats_items:
+                print_color(f"{label}{value:,}", color)
 
-        if self.stats["files_processed"] > 0:
-            changed_percent = (self.stats["files_changed"] / self.stats["files_processed"]) * 100
-            print_color(
-                f"\n{changed_percent:.1f}% of files were modified",
-                Colors.GREEN if changed_percent > 0 else Colors.DIM,
-            )
-
+            if self.stats["files_processed"] > 0:
+                changed_percent = (self.stats["files_changed"] / self.stats["files_processed"]) * 100
+                if changed_percent > 0 or args.verbose:
+                    print_color(
+                        f"\n{changed_percent:.1f}% of files were modified",
+                        Colors.GREEN if changed_percent > 0 else Colors.DIM,
+                    )
 
 def main():
     parser = argparse.ArgumentParser(
