@@ -1,4 +1,4 @@
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __author__ = "hairpin01"
 __license__ = "GNU General Public License v3.0"
 
