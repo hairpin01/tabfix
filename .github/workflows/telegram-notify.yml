@@ -1,0 +1,33 @@
+name: Simple Telegram Release Notification
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send release notification
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          MESSAGE="🍰 New release! tabfix-tool v${VERSION}
+          
+          pip install --upgrade tabfix-tool
+          
+          With extras:
+          pip install --upgrade tabfix-tool[dev]
+          pip install --upgrade tabfix-tool[encoding]
+          pip install --upgrade tabfix-tool[full]
+          pip install --upgrade tabfix-tool[unifmt]
+          
+          Specific version:
+          pip install tabfix-tool==${VERSION}
+          
+          ${{ github.event.release.html_url }}"
+          
+          curl -s -X POST \
+            "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "text=$MESSAGE" \
+            -d "parse_mode=Markdown"
