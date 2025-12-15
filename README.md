@@ -8,7 +8,7 @@ Advanced tool for fixing `tab/space` indentation issues in `code` files.
 - Normalize line endings
 - Handle `UTF-8` BOM markers
 - Format `JSON` files
-- Git integration
+- `Git` integration
 - Progress bars with tqdm
 - Colorful output
 
