@@ -26,7 +26,7 @@ or via installer
 curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabfix/installer.py | python3
 ```
 > [!TIP]
-> to install the unifmt package, see [optional](https://github.com/hairpin01/tabfix/edit/main/README.md#install-optional-unifmt-or-devencodingfull)
+> to install the unifmt package, see [optional](https://github.com/hairpin01/tabfix#install-optional-unifmt-or-devencodingfull)
 
 
 ## From source
