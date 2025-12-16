@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.0 (2025-01-01)
+## 1.1.0 
 
 ### New Features
 - Improved file encoding detection
@@ -13,5 +13,5 @@
 - Improved .gitignore handling
 - Better progress reporting
 
-## 1.0.0 (2024-12-15)
+## 1.0.0 
 - Initial release
