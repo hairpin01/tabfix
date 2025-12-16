@@ -23,16 +23,16 @@ Advanced tool for fixing `tab/space` indentation issues in `code` files.
 > - Colorful output
 
 ## Installation
-```shell
+```bash
 # Install from PyPI
 pip install tabfix-tool
 ```
-```shell
+```bash
 # Or directly from GitHub
 pip install git+https://github.com/hairpin01/tabfix.git
 ```
 or via installer
-```shell
+```bash
 curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabfix/installer.py | python3
 ```
 > [!TIP]
@@ -40,24 +40,23 @@ curl https://raw.githubusercontent.com/hairpin01/tabfix/refs/heads/main/src/tabf
 
 
 ## From source
-`git clone https://github.com/hairpin01/tabfix.git
-&& cd tabfix
-&& pip install -e .
-`
-## Usage
+```bash
+git clone https://github.com/hairpin01/tabfix.git && cd tabfix && pip install -e .
 ```
+## Usage
+```bash
 # Basic usage
 tabfix file.py
 ```
-```
+```bash
 # Recursive processing
 tabfix --recursive src/
 ```
-```
+```bash
 # Fix multiple issues
 tabfix --all --progress .
 ```
-```
+```bash
 # Check without modifying
 tabfix --check-mixed --recursive .
 ```
