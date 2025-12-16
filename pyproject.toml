@@ -4,11 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tabfix-tool"
-<<<<<<< HEAD
 version = "1.2.5"  
-=======
-version = "1.2.5"
->>>>>>> 2f2448d (update version)
 authors = [
     {name = "hairpin01", email = "alichka240784@gmail.com"}
 ]
