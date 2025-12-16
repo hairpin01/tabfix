@@ -160,3 +160,17 @@ class ConfigLoader:
         except Exception as e:
             print(f"Error saving config: {e}")
             return False
+
+
+class TabFixConfig:
+    def update_from_dict(self, data: dict):
+        for key, value in data.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+    def update_from_args(self, args):
+        for key in vars(args):
+            if hasattr(self, key):
+                value = getattr(args, key)
+                if value is not None:
+                    setattr(self, key, value)
