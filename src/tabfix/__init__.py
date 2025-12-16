@@ -8,7 +8,7 @@ from .api import (
     create_config_file,
 )
 
-__version__ = "1.2.1"
+__version__ = "1.2.5"
 
 __all__ = [
     "TabFixAPI",
