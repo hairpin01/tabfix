@@ -1,3 +1,6 @@
+[![PyPI version](https://img.shields.io/pypi/v/tabfix-tool.svg)](https://pypi.org/project/tabfix-tool/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/tabfix-tool.svg)](https://pypi.org/project/tabfix-tool/)
+[![Python versions](https://img.shields.io/pypi/pyversions/tabfix-tool.svg)](https://pypi.org/project/tabfix-tool/)
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/7fceb52b899d44b3bb151b568dc99d38)](https://app.codacy.com/gh/hairpin01/tabfix/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![GitHub repo size](https://img.shields.io/github/repo-size/hairpin01/tabfix)](https://github.com/hairpin01/tabfix)
 [![GitHub last commit](https://img.shields.io/github/last-commit/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/commits/main)
@@ -5,7 +8,6 @@
 [![GitHub forks](https://img.shields.io/github/forks/hairpin01/tabfix?style=flat)](https://github.com/hairpin01/tabfix/network/members)
 [![GitHub stars](https://img.shields.io/github/stars/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/stargazers)
 [![GitHub license](https://img.shields.io/github/license/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/blob/main/LICENSE)
-[![PyPI version](https://img.shields.io/pypi/v/tabfix-tool.svg)](https://pypi.org/project/tabfix-tool/)
 
 # TabFix Tool
 Advanced tool for fixing `tab/space` indentation issues in `code` files.
@@ -59,12 +61,13 @@ tabfix --all --progress .
 # Check without modifying
 tabfix --check-mixed --recursive .
 ```
-## **full usage (all flags)**
+## Complete Help Reference
+
 <details>
-<summary><b> full help</b></summary>
+<summary><b>Show full command reference (tabfix -h)</b></summary>
 
 ```bash
-$ fabfix -h
+$ tabfix -h
 usage: tabfix [-h] [--config CONFIG] [--no-config] [--init] [--show-config] [-s SPACES] [-m] [-t] [-f] [--remove-bom] [--keep-bom] [--format-json] [--git-staged]
               [--git-unstaged] [--git-all-changed] [--no-gitignore] [--skip-binary] [--no-skip-binary] [--force-encoding FORCE_ENCODING]
               [--fallback-encoding FALLBACK_ENCODING] [--warn-encoding] [--max-file-size MAX_FILE_SIZE] [--smart-processing] [--no-smart-processing]
@@ -145,12 +148,87 @@ Examples:
   tabfix --recursive --remove-bom  # Process recursively, remove BOM
   tabfix --git-staged --interactive # Interactive mode on staged files
 ```
-
 </details>
-
 
 
 ## install optional unifmt or dev/encoding/full
 ```
 pip install tabfix-tool[unifmt] # or {optional}
 ```
+
+## API Documentation
+<details>
+<summary><b> Python API examples</b></summary>
+  
+```python
+# developer_script.py
+from tabfix import TabFixAPI, TabFixConfig, fix_string, fix_file
+
+# Method 1: Using API class
+config = TabFixConfig(spaces=2, fix_mixed=True, fix_trailing=True)
+api = TabFixAPI(config)
+
+# Fix a string
+fixed_content, changes = api.fix_string("def foo():\n\tprint('hello')", Path("test.py"))
+print(f"Fixed content: {fixed_content}")
+print(f"Changes: {changes}")
+
+# Fix a file
+changed, file_changes = api.fix_file(Path("my_script.py"))
+print(f"File changed: {changed}")
+print(f"File changes: {file_changes}")
+
+# Method 2: Using convenience functions
+# Fix string directly
+content = "if True:\n\tprint('tab')"
+fixed, changes = fix_string(content, spaces=4)
+print(f"Fixed: {fixed}")
+
+# Check if file needs fixing
+needs_fix, issues = check_file(Path("config.json"))
+print(f"Needs fix: {needs_fix}, Issues: {issues}")
+
+# Detect indentation style
+result = detect_indentation(content)
+print(f"Indentation: {result}")
+
+# Create config file
+create_config_file(Path(".tabfixrc.json"))
+```
+More:
+```python
+# developer_script.py
+from tabfix import TabFixAPI, TabFixConfig, fix_string, fix_file
+
+# Method 1: Using API class
+config = TabFixConfig(spaces=2, fix_mixed=True, fix_trailing=True)
+api = TabFixAPI(config)
+
+# Fix a string
+fixed_content, changes = api.fix_string("def foo():\n\tprint('hello')", Path("test.py"))
+print(f"Fixed content: {fixed_content}")
+print(f"Changes: {changes}")
+
+# Fix a file
+changed, file_changes = api.fix_file(Path("my_script.py"))
+print(f"File changed: {changed}")
+print(f"File changes: {file_changes}")
+
+# Method 2: Using convenience functions
+# Fix string directly
+content = "if True:\n\tprint('tab')"
+fixed, changes = fix_string(content, spaces=4)
+print(f"Fixed: {fixed}")
+
+# Check if file needs fixing
+needs_fix, issues = check_file(Path("config.json"))
+print(f"Needs fix: {needs_fix}, Issues: {issues}")
+
+# Detect indentation style
+result = detect_indentation(content)
+print(f"Indentation: {result}")
+
+# Create config file
+create_config_file(Path(".tabfixrc.json"))
+```
+</details>
