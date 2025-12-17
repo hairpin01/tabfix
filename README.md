@@ -150,7 +150,7 @@ Examples:
 </details>
 
 
-## install optional unifmt or dev/encoding/full
+## install optional unifmt or dev/encoding/full 
 ```
 pip install tabfix-tool[unifmt] # or {optional}
 ```
