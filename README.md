@@ -67,35 +67,31 @@ tabfix --check-mixed --recursive .
 
 ```bash
 $ tabfix -h
-usage: tabfix [-h] [--config CONFIG] [--no-config] [--init] [--show-config] [-s SPACES] [-m] [-t] [-f] [--remove-bom] [--keep-bom] [--format-json] [--git-staged]
-              [--git-unstaged] [--git-all-changed] [--no-gitignore] [--skip-binary] [--no-skip-binary] [--force-encoding FORCE_ENCODING]
-              [--fallback-encoding FALLBACK_ENCODING] [--warn-encoding] [--max-file-size MAX_FILE_SIZE] [--smart-processing] [--no-smart-processing]
-              [--preserve-quotes] [-r] [-i] [--progress] [--dry-run] [--backup] [--pre-commit] [-v] [-q] [--no-color] [--diff FILE1 FILE2]
+usage: tabfix [-h] [-s SPACES] [-r] [--git-staged] [--git-unstaged]
+              [--git-all-changed] [--no-gitignore] [--autoformat]
+              [--check-format] [--list-formatters] [--formatters FORMATTERS]
+              [--init-autoformat] [--skip-binary] [--no-skip-binary]
+              [--force-encoding FORCE_ENCODING]
+              [--fallback-encoding FALLBACK_ENCODING] [--warn-encoding]
+              [--max-file-size MAX_FILE_SIZE] [--smart-processing]
+              [--no-smart-processing] [--preserve-quotes] [-m] [-t] [-f]
+              [--remove-bom] [--keep-bom] [--format-json] [-i] [--progress]
+              [--dry-run] [--backup] [--diff FILE1 FILE2] [-v] [-q]
+              [--no-color] [--init] [--config CONFIG] [--no-config]
               [paths ...]
 
-Advanced tab/space indentation fixer with extended features
+Advanced tab/space indentation fixer with autoformatting
 
 positional arguments:
   paths                 Files or directories to process
 
 options:
   -h, --help            show this help message and exit
-  --diff FILE1 FILE2    Compare indentation between two files
-
-Configuration:
+  -s, --spaces SPACES   Number of spaces per tab (default: 4)
+  -r, --recursive       Process directories recursively
+  --init                Initialize configuration file (.tabfixrc)
   --config CONFIG       Path to configuration file
   --no-config           Ignore configuration files
-  --init                Initialize configuration file (.tabfixrc)
-  --show-config         Show current configuration and exit
-
-Formatting options:
-  -s, --spaces SPACES   Number of spaces per tab (default: 4)
-  -m, --fix-mixed       Fix mixed tabs/spaces indentation
-  -t, --fix-trailing    Remove trailing whitespace
-  -f, --final-newline   Ensure file ends with newline
-  --remove-bom          Remove UTF-8 BOM marker
-  --keep-bom            Preserve existing BOM marker
-  --format-json         Format JSON files with proper indentation
 
 Git integration:
   --git-staged          Process only staged files in git
@@ -103,49 +99,64 @@ Git integration:
   --git-all-changed     Process all changed files in git
   --no-gitignore        Do not use .gitignore patterns
 
-Encoding and file handling:
-  --skip-binary         Skip files that appear to be binary
+Autoformatting:
+  --autoformat, -a      Autoformat files using external formatters
+  --check-format        Check formatting without making changes
+  --list-formatters     List available formatters and exit
+  --formatters FORMATTERS
+                        Comma-separated list of formatters to use (e.g.
+                        black,isort)
+  --init-autoformat     Initialize autoformat configuration file
+
+Encoding and binary file handling:
+  --skip-binary         Skip files that appear to be binary (default: True)
   --no-skip-binary      Process files even if they appear to be binary
   --force-encoding FORCE_ENCODING
                         Force specific encoding (skip auto-detection)
   --fallback-encoding FALLBACK_ENCODING
-                        Fallback encoding when detection fails (default: latin-1)
+                        Fallback encoding when detection fails (default:
+                        latin-1)
   --warn-encoding       Warn when encoding detection is uncertain
   --max-file-size MAX_FILE_SIZE
-                        Maximum file size to process in bytes (default: 10MB)
+                        Maximum file size to process in bytes (default:
+                        10MB)
 
 File type specific processing:
-  --smart-processing    Enable smart processing for different file types (default: True)
+  --smart-processing    Enable smart processing for different file types
+                        (default: True)
   --no-smart-processing
                         Disable smart processing for different file types
   --preserve-quotes     Preserve original string quotes in code files
 
+Formatting options:
+  -m, --fix-mixed       Fix mixed tabs/spaces indentation
+  -t, --fix-trailing    Remove trailing whitespace
+  -f, --final-newline   Ensure file ends with newline
+  --remove-bom          Remove UTF-8 BOM marker
+  --keep-bom            Preserve existing BOM marker
+  --format-json         Format JSON files with proper indentation
+
 Operation mode:
-  -r, --recursive       Process directories recursively
   -i, --interactive     Interactive mode (confirm each change)
   --progress            Show progress bar during processing
   --dry-run             Show changes without modifying files
   --backup              Create backup files (.bak)
-  --pre-commit          Generate pre-commit hook configuration
+  --diff FILE1 FILE2    Compare indentation between two files
 
 Output control:
   -v, --verbose         Verbose output
   -q, --quiet           Quiet mode (minimal output)
   --no-color            Disable colored output
 
-Configuration:
-  tabfix will look for configuration files in the following order:
-  1. .tabfixrc, .tabfixrc.json, .tabfixrc.toml, .tabfixrc.yaml
-  2. pyproject.toml (in [tool.tabfix] section)
-  3. tabfix.json
-
-  Command line arguments override configuration file settings.
-
 Examples:
   tabfix --init                    # Create .tabfixrc config file
-  tabfix --pre-commit              # Generate pre-commit hook config
+  tabfix --init-autoformat         # Create autoformat config
+  tabfix --autoformat              # Autoformat files using external tools
+  tabfix --check-format            # Check formatting without changes
+  tabfix --list-formatters         # List available formatters
   tabfix --recursive --remove-bom  # Process recursively, remove BOM
   tabfix --git-staged --interactive # Interactive mode on staged files
+  tabfix --diff file1.py file2.py  # Compare indentation
 ```
 </details>
 
