@@ -2,18 +2,24 @@
 import sys
 import argparse
 from pathlib import Path
+from typing import List
 
 from .core import TabFix, Colors, print_color, GitignoreMatcher
 from .config import TabFixConfig, ConfigLoader, init_project
+from .autoformat import get_available_formatters, create_autoformat_config, Formatter, FileProcessor
 
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Advanced tab/space indentation fixer with extended features",
+        description="Advanced tab/space indentation fixer with autoformatting",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   tabfix --init                    # Create .tabfixrc config file
+  tabfix --init-autoformat         # Create autoformat config
+  tabfix --autoformat              # Autoformat files using external tools
+  tabfix --check-format            # Check formatting without changes
+  tabfix --list-formatters         # List available formatters
   tabfix --recursive --remove-bom  # Process recursively, remove BOM
   tabfix --git-staged --interactive # Interactive mode on staged files
   tabfix --diff file1.py file2.py  # Compare indentation
@@ -61,6 +67,33 @@ Examples:
         help="Do not use .gitignore patterns"
     )
 
+    autoformat_group = parser.add_argument_group("Autoformatting")
+    autoformat_group.add_argument(
+        "--autoformat",
+        "-a",
+        action="store_true",
+        help="Autoformat files using external formatters"
+    )
+    autoformat_group.add_argument(
+        "--check-format",
+        action="store_true",
+        help="Check formatting without making changes"
+    )
+    autoformat_group.add_argument(
+        "--list-formatters",
+        action="store_true",
+        help="List available formatters and exit"
+    )
+    autoformat_group.add_argument(
+        "--formatters",
+        help="Comma-separated list of formatters to use (e.g. black,isort)"
+    )
+    autoformat_group.add_argument(
+        "--init-autoformat",
+        action="store_true",
+        help="Initialize autoformat configuration file"
+    )
+
     encoding_group = parser.add_argument_group("Encoding and binary file handling")
     encoding_group.add_argument(
         "--skip-binary",
@@ -95,93 +128,78 @@ Examples:
         help="Maximum file size to process in bytes (default: 10MB)"
     )
 
-    filetype_group = parser.add_argument_group("File type specific processing")
-    filetype_group.add_argument(
-        "--smart-processing",
+    formatting_group = parser.add_argument_group("Formatting options")
+    formatting_group.add_argument(
+        "-m", "--fix-mixed",
         action="store_true",
-        default=True,
-        help="Enable smart processing for different file types (default: True)"
+        help="Fix mixed tabs/spaces indentation"
     )
-    filetype_group.add_argument(
-        "--no-smart-processing",
-        action="store_false",
-        dest="smart_processing",
-        help="Disable smart processing for different file types"
-    )
-    filetype_group.add_argument(
-        "--preserve-quotes",
+    formatting_group.add_argument(
+        "-t", "--fix-trailing",
         action="store_true",
-        help="Preserve original string quotes in code files"
+        help="Remove trailing whitespace"
+    )
+    formatting_group.add_argument(
+        "-f", "--final-newline",
+        action="store_true",
+        help="Ensure file ends with newline"
+    )
+    formatting_group.add_argument(
+        "--remove-bom",
+        action="store_true",
+        help="Remove UTF-8 BOM marker"
+    )
+    formatting_group.add_argument(
+        "--keep-bom",
+        action="store_true",
+        help="Preserve existing BOM marker"
+    )
+    formatting_group.add_argument(
+        "--format-json",
+        action="store_true",
+        help="Format JSON files with proper indentation"
     )
 
-    parser.add_argument(
+    mode_group = parser.add_argument_group("Operation mode")
+    mode_group.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="Interactive mode (confirm each change)"
+    )
+    mode_group.add_argument(
+        "--progress",
+        action="store_true",
+        help="Show progress bar during processing"
+    )
+    mode_group.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show changes without modifying files"
+    )
+    mode_group.add_argument(
+        "--backup",
+        action="store_true",
+        help="Create backup files (.bak)"
+    )
+    mode_group.add_argument(
         "--diff",
         nargs=2,
         metavar=("FILE1", "FILE2"),
         help="Compare indentation between two files"
     )
-    parser.add_argument(
-        "--format-json",
-        action="store_true",
-        help="Format JSON files with proper indentation"
-    )
-    parser.add_argument(
-        "-i", "--interactive",
-        action="store_true",
-        help="Interactive mode (confirm each change)"
-    )
-    parser.add_argument(
-        "--progress",
-        action="store_true",
-        help="Show progress bar during processing"
-    )
-    parser.add_argument(
-        "--remove-bom",
-        action="store_true",
-        help="Remove UTF-8 BOM marker"
-    )
-    parser.add_argument(
-        "--keep-bom",
-        action="store_true",
-        help="Preserve existing BOM marker"
-    )
 
-    parser.add_argument(
-        "-m", "--fix-mixed",
-        action="store_true",
-        help="Fix mixed tabs/spaces indentation"
-    )
-    parser.add_argument(
-        "-t", "--fix-trailing",
-        action="store_true",
-        help="Remove trailing whitespace"
-    )
-    parser.add_argument(
-        "-f", "--final-newline",
-        action="store_true",
-        help="Ensure file ends with newline"
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show changes without modifying files"
-    )
-    parser.add_argument(
-        "--backup",
-        action="store_true",
-        help="Create backup files (.bak)"
-    )
-    parser.add_argument(
+    output_group = parser.add_argument_group("Output control")
+    output_group.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output"
     )
-    parser.add_argument(
+    output_group.add_argument(
         "-q", "--quiet",
         action="store_true",
         help="Quiet mode (minimal output)"
     )
-    parser.add_argument(
+    output_group.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored output"
@@ -218,11 +236,42 @@ def main():
         success = init_project(Path.cwd())
         sys.exit(0 if success else 1)
 
+    if args.init_autoformat:
+        config_path = create_autoformat_config()
+        print_color(f"Created autoformat config: {config_path}", Colors.GREEN)
+        sys.exit(0)
+
+    if args.list_formatters:
+        formatters = get_available_formatters()
+        print_color("Available formatters:", Colors.BOLD)
+        for formatter in formatters:
+            print_color(f"  ✓ {formatter}", Colors.GREEN)
+        if not formatters:
+            print_color("  No formatters found. Install tools like black, prettier, etc.", Colors.YELLOW)
+        sys.exit(0)
+
     if args.remove_bom and args.keep_bom:
         print_color("Cannot use both --remove-bom and --keep-bom", Colors.RED)
         sys.exit(1)
 
+    if args.autoformat and args.check_format:
+        print_color("Cannot use both --autoformat and --check-format", Colors.RED)
+        sys.exit(1)
+
     fixer = TabFix(spaces_per_tab=args.spaces)
+    file_processor = None
+
+    if args.autoformat or args.check_format:
+        file_processor = FileProcessor(spaces_per_tab=args.spaces)
+        if args.formatters:
+            try:
+                formatter_list = [Formatter(f.strip()) for f in args.formatters.split(',')]
+                args.formatter_list = formatter_list
+            except ValueError as e:
+                print_color(f"Invalid formatter: {e}", Colors.RED)
+                sys.exit(1)
+        else:
+            args.formatter_list = None
 
     if args.diff:
         file1 = Path(args.diff[0])
@@ -309,10 +358,51 @@ def main():
     except ImportError:
         iterator = processed_files
 
+    autoformat_stats = {"formatted": 0, "failed": 0, "checked": 0}
+
     for filepath in iterator:
-        fixer.process_file(filepath, args, gitignore_matcher)
+        file_changed = fixer.process_file(filepath, args, gitignore_matcher)
+
+        if file_processor and (args.autoformat or args.check_format):
+            if args.verbose:
+                print_color(f"{'Checking' if args.check_format else 'Formatting'} {filepath}", Colors.CYAN)
+
+            success, messages = file_processor.process_file(
+                filepath,
+                formatters=args.formatter_list,
+                check_only=args.check_format
+            )
+
+            if args.check_format:
+                autoformat_stats["checked"] += 1
+                if not success and args.verbose:
+                    for msg in messages:
+                        print_color(f"  ✗ {msg}", Colors.RED)
+            elif args.autoformat:
+                if success:
+                    autoformat_stats["formatted"] += 1
+                    if args.verbose:
+                        for msg in messages:
+                            print_color(f"  ✓ {msg}", Colors.GREEN)
+                else:
+                    autoformat_stats["failed"] += 1
+                    if args.verbose:
+                        for msg in messages:
+                            print_color(f"  ✗ {msg}", Colors.RED)
 
     fixer.print_stats(args)
+
+    if args.autoformat or args.check_format:
+        print_color(f"\n{'='*60}", Colors.CYAN)
+        print_color("AUTOFORMAT STATISTICS", Colors.BOLD + Colors.CYAN)
+        print_color(f"{'='*60}", Colors.CYAN)
+
+        if args.check_format:
+            print_color(f"Files checked: {autoformat_stats['checked']}", Colors.BLUE)
+        else:
+            print_color(f"Files formatted: {autoformat_stats['formatted']}", Colors.GREEN)
+            if autoformat_stats['failed'] > 0:
+                print_color(f"Files failed: {autoformat_stats['failed']}", Colors.RED)
 
 
 if __name__ == "__main__":
