@@ -8,13 +8,7 @@ tabfix/
 │       ├── api.py              # Developer API
 │       ├── core.py             # Main functionality
 │       ├── config.py           # Configuration handling
-│       └── unifmt/             # Universal formatter
-│           ├── __init__.py
-│           ├── __main__.py
-│           ├── cli.py
-│           ├── config.py
-│           ├── formatters.py
-│           └── collector.py
+│       └── autoformat.py      
 ├── tests/                      # Test suite
 ├── pyproject.toml             # Build configuration
 └── README.md                  # This file
