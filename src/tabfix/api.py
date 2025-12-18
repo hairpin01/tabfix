@@ -1,413 +1,390 @@
 from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional, Union, Iterator
-from dataclasses import dataclass, asdict, field
+from typing import List, Tuple, Dict, Any, Optional, Union, Generator
+from dataclasses import dataclass, asdict
 import json
-from contextlib import contextmanager
-from functools import wraps
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 
-
-@dataclass
-class TabFixConfig:
-    spaces: int = 4
-    fix_mixed: bool = True
-    fix_trailing: bool = True
-    final_newline: bool = True
-    remove_bom: bool = False
-    keep_bom: bool = False
-    format_json: bool = True
-    max_file_size: int = 10 * 1024 * 1024
-    skip_binary: bool = True
-    fallback_encoding: str = "latin-1"
-    warn_encoding: bool = False
-    force_encoding: Optional[str] = None
-    smart_processing: bool = True
-    preserve_quotes: bool = False
-    progress: bool = False
-    dry_run: bool = False
-    backup: bool = False
-    verbose: bool = False
-    quiet: bool = True
-    no_color: bool = True
-    git_staged: bool = False
-    git_unstaged: bool = False
-    git_all_changed: bool = False
-    no_gitignore: bool = False
-    recursive: bool = False
-    interactive: bool = False
-    paths: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TabFixConfig":
-        valid_fields = {f.name for f in field(cls)}
-        filtered = {k: v for k, v in data.items() if k in valid_fields}
-        return cls(**filtered)
+from .core import TabFix, GitignoreMatcher
+from .config import TabFixConfig, ConfigLoader
+from .autoformat import Formatter, FileProcessor, get_available_formatters
 
 
 @dataclass
 class FileResult:
     filepath: Path
-    changed: bool
-    changes: List[str]
-    error: Optional[str] = None
-    
+    changed: bool = False
+    changes: List[str] = None
+    errors: List[str] = None
+    needs_formatting: bool = False
+
+    def __post_init__(self):
+        if self.changes is None:
+            self.changes = []
+        if self.errors is None:
+            self.errors = []
+
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "filepath": str(self.filepath),
-            "changed": self.changed,
-            "changes": self.changes,
-            "error": self.error,
+            'filepath': str(self.filepath),
+            'changed': self.changed,
+            'changes': self.changes,
+            'errors': self.errors,
+            'needs_formatting': self.needs_formatting
         }
-    
-    def __str__(self) -> str:
-        if self.error:
-            return f"{self.filepath}: ERROR - {self.error}"
-        if self.changed:
-            return f"{self.filepath}: CHANGED ({len(self.changes)} changes)"
-        return f"{self.filepath}: OK"
 
 
 @dataclass
 class BatchResult:
-    total_files: int
-    changed_files: int
-    failed_files: int
-    skipped_files: int
-    results: List[FileResult]
-    
+    total_files: int = 0
+    changed_files: int = 0
+    failed_files: int = 0
+    files_needing_format: int = 0
+    individual_results: List[FileResult] = None
+
+    def __post_init__(self):
+        if self.individual_results is None:
+            self.individual_results = []
+
+    def add_result(self, result: FileResult):
+        self.individual_results.append(result)
+        self.total_files += 1
+        if result.changed:
+            self.changed_files += 1
+        if result.errors:
+            self.failed_files += 1
+        if result.needs_formatting:
+            self.files_needing_format += 1
+
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "total_files": self.total_files,
-            "changed_files": self.changed_files,
-            "failed_files": self.failed_files,
-            "skipped_files": self.skipped_files,
-            "results": [r.to_dict() for r in self.results],
+            'total_files': self.total_files,
+            'changed_files': self.changed_files,
+            'failed_files': self.failed_files,
+            'files_needing_format': self.files_needing_format,
+            'results': [r.to_dict() for r in self.individual_results]
         }
-    
-    def __str__(self) -> str:
-        return f"Processed {self.total_files} files: {self.changed_files} changed, {self.failed_files} failed, {self.skipped_files} skipped"
-
-
-def catch_errors(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            if args and hasattr(args[0], 'config') and args[0].config.verbose:
-                raise
-            return None
-    return wrapper
 
 
 class TabFixAPI:
-    def __init__(self, config: Optional[Union[TabFixConfig, Dict[str, Any]]] = None):
-        if isinstance(config, dict):
-            self.config = TabFixConfig.from_dict(config)
-        elif isinstance(config, TabFixConfig):
-            self.config = config
-        else:
-            self.config = TabFixConfig()
-        
-        from .core import TabFix, GitignoreMatcher
-        self._core = TabFix(spaces_per_tab=self.config.spaces)
-        self._gitignore_matcher: Optional[GitignoreMatcher] = None
-    
-    @contextmanager
-    def context(self, **kwargs):
-        original_config = self.config
-        try:
-            config_dict = original_config.to_dict()
-            config_dict.update(kwargs)
-            self.config = TabFixConfig.from_dict(config_dict)
-            yield self
-        finally:
-            self.config = original_config
-    
-    @catch_errors
-    def fix_string(self, content: str, filepath: Optional[Union[str, Path]] = None, **kwargs) -> Tuple[str, List[str]]:
-        with self.context(**kwargs) as api:
-            changes = []
-            fixed_content = content
-            
-            if filepath:
-                filepath = Path(filepath)
-                if api.config.format_json and filepath.suffix.lower() == ".json":
-                    formatted, changed = api._core.format_json(fixed_content)
-                    if changed:
-                        fixed_content = formatted
-                        changes.append("Formatted JSON")
-            
-            if api.config.fix_mixed:
-                fixed_content, indent_changes = api._core.fix_mixed_indentation(fixed_content)
-                changes.extend(indent_changes)
-            
-            if api.config.fix_trailing:
-                fixed_content, trailing_changes = api._core.fix_trailing_spaces(fixed_content)
-                changes.extend(trailing_changes)
-            
-            if api.config.final_newline:
-                fixed_content, newline_changes = api._core.ensure_final_newline(fixed_content)
-                changes.extend(newline_changes)
-            
-            return fixed_content, changes
-    
-    @catch_errors
-    def fix_file(self, filepath: Union[str, Path], **kwargs) -> FileResult:
-        with self.context(**kwargs) as api:
-            from .core import GitignoreMatcher
-            
-            filepath = Path(filepath)
-            
-            if not filepath.exists():
-                return FileResult(filepath, False, [], f"File not found: {filepath}")
-            
-            if not filepath.is_file():
-                return FileResult(filepath, False, [], f"Not a file: {filepath}")
-            
-            if api.config.no_gitignore == False:
-                if api._gitignore_matcher is None:
-                    root_dir = filepath.parent
-                    gitignore_path = root_dir / ".gitignore"
-                    if gitignore_path.exists():
-                        api._gitignore_matcher = GitignoreMatcher(root_dir)
-                
-                if api._gitignore_matcher and api._gitignore_matcher.should_ignore(filepath):
-                    return FileResult(filepath, False, [], "Ignored by .gitignore")
-            
-            file_size = filepath.stat().st_size
-            if file_size > api.config.max_file_size:
-                return FileResult(filepath, False, [], f"File too large: {file_size / 1024 / 1024:.1f}MB")
-            
-            class Args:
+    def __init__(self, config: Optional[TabFixConfig] = None):
+        self.config = config or TabFixConfig()
+        self.tabfix = TabFix(spaces_per_tab=self.config.spaces)
+        self.formatter = None
+
+        if self.config.smart_processing:
+            try:
+                self.formatter = FileProcessor(spaces_per_tab=self.config.spaces)
+            except Exception:
                 pass
-            
-            args = Args()
-            for key, value in api.config.to_dict().items():
-                setattr(args, key, value)
-            
-            try:
-                if hasattr(api._core, 'process_file_with_changes'):
-                    changed, changes = api._core.process_file_with_changes(filepath, args, None)
-                else:
-                    changed = api._core.process_file(filepath, args, None)
-                    changes = []
-                
-                return FileResult(filepath, changed, changes)
-                
-            except Exception as e:
-                if api.config.verbose:
-                    raise
-                return FileResult(filepath, False, [], str(e))
-    
-    def fix_files(self, filepaths: List[Union[str, Path]], **kwargs) -> BatchResult:
-        with self.context(**kwargs) as api:
-            results = []
-            changed_count = 0
-            failed_count = 0
-            skipped_count = 0
-            
-            for filepath in filepaths:
-                result = api.fix_file(filepath)
-                results.append(result)
-                
-                if result.error:
-                    if "ignored" in result.error.lower() or "not found" in result.error.lower():
-                        skipped_count += 1
-                    else:
-                        failed_count += 1
-                elif result.changed:
-                    changed_count += 1
-            
-            return BatchResult(
-                total_files=len(results),
-                changed_files=changed_count,
-                failed_files=failed_count,
-                skipped_files=skipped_count,
-                results=results,
-            )
-    
-    def fix_directory(self, directory: Union[str, Path], pattern: str = "**/*", **kwargs) -> BatchResult:
-        with self.context(**kwargs) as api:
-            directory = Path(directory)
-            
-            if not api.config.recursive:
-                pattern = pattern.replace("**/", "")
-            
-            files = []
-            for filepath in directory.glob(pattern):
-                if filepath.is_file():
-                    files.append(filepath)
-            
-            return api.fix_files(files)
-    
-    @catch_errors
-    def check_file(self, filepath: Union[str, Path], **kwargs) -> Tuple[bool, List[str]]:
-        with self.context(**kwargs) as api:
-            api.config.dry_run = True
-            api.config.check_only = True
-            api.config.quiet = True
-            
-            result = api.fix_file(filepath)
-            if result.error:
-                return False, [result.error]
-            return result.changed, result.changes
-    
-    def batch_check(self, filepaths: List[Union[str, Path]], **kwargs) -> Dict[str, Tuple[bool, List[str]]]:
-        results = {}
-        for filepath in filepaths:
-            needs_fix, issues = self.check_file(filepath, **kwargs)
-            results[str(filepath)] = (needs_fix, issues)
-        return results
-    
-    @catch_errors
-    def detect_indentation(self, content: str) -> Dict[str, Any]:
-        return self._core.detect_indentation(content)
-    
-    def compare_files(self, file1: Union[str, Path], file2: Union[str, Path]) -> Dict[str, Any]:
-        file1 = Path(file1)
-        file2 = Path(file2)
-        return self._core.compare_files_indentation(file1, file2)
-    
-    def get_git_files(self, mode: str = "staged") -> List[Path]:
-        return self._core.get_git_files(mode)
-    
-    def fix_git_files(self, mode: str = "staged", **kwargs) -> BatchResult:
-        files = self.get_git_files(mode)
-        return self.fix_files(files, **kwargs)
-    
-    def create_config_file(self, filepath: Union[str, Path], format: str = "json"):
-        filepath = Path(filepath)
-        
-        if format.lower() == "json":
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.config.to_dict(), f, indent=2, ensure_ascii=False)
-        elif format.lower() == "toml":
-            try:
-                import tomli_w
-                with open(filepath, 'wb') as f:
-                    tomli_w.dump(self.config.to_dict(), f)
-            except ImportError:
-                raise ImportError("tomli-w is required for TOML format")
-        else:
-            raise ValueError(f"Unsupported format: {format}")
-    
-    def load_config_file(self, filepath: Union[str, Path]) -> "TabFixAPI":
-        filepath = Path(filepath)
-        
-        if filepath.suffix.lower() == ".json":
-            with open(filepath, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        elif filepath.suffix.lower() == ".toml":
-            try:
-                import tomllib
-                with open(filepath, 'rb') as f:
-                    data = tomllib.load(f)
-            except ImportError:
-                try:
-                    import tomli as tomllib
-                    with open(filepath, 'rb') as f:
-                        data = tomllib.load(f)
-                except ImportError:
-                    raise ImportError("tomli is required for TOML format")
-        else:
-            raise ValueError(f"Unsupported config format: {filepath.suffix}")
-        
-        return TabFixAPI(data)
-    
-    def generate_pre_commit_hook(self, output_file: Union[str, Path] = ".pre-commit-config.yaml"):
+
+    def process_string(self, content: str, filepath: Optional[Path] = None) -> Tuple[str, FileResult]:
+        result = FileResult(filepath=filepath or Path("string"))
+
         try:
-            import yaml
-        except ImportError:
-            raise ImportError("PyYAML is required to generate pre-commit hooks")
-        
-        from . import __version__
-        
-        config = {
-            "repos": [{
-                "repo": "https://github.com/hairpin01/tabfix",
-                "rev": f"v{__version__}",
-                "hooks": [{
-                    "id": "tabfix",
-                    "name": "tabfix",
-                    "entry": "tabfix",
-                    "args": [
-                        "--fix-mixed",
-                        "--fix-trailing", 
-                        "--final-newline",
-                        "--format-json",
-                    ],
-                    "language": "python",
-                    "types_or": ["python", "javascript", "json", "yaml", "markdown", "html", "css"],
-                    "stages": ["commit"],
-                }]
-            }]
+            processed, changes = self.tabfix.fix_string(content)
+            if changes:
+                result.changed = True
+                result.changes.extend(changes)
+
+            if self.formatter and filepath:
+                success, messages = self.formatter.process_file(
+                    filepath,
+                    check_only=True
+                )
+                if not success:
+                    result.needs_formatting = True
+                    result.changes.append(f"Needs formatting: {', '.join(messages)}")
+
+            return processed, result
+
+        except Exception as e:
+            result.errors.append(str(e))
+            return content, result
+
+    def process_file(self, filepath: Path) -> FileResult:
+        result = FileResult(filepath=filepath)
+
+        class Args:
+            def __init__(self, config):
+                for key, value in config.to_dict().items():
+                    setattr(self, key, value)
+
+        args = Args(self.config)
+
+        try:
+            changed = self.tabfix.process_file(filepath, args, None)
+            result.changed = changed
+
+            if self.formatter:
+                success, messages = self.formatter.process_file(
+                    filepath,
+                    check_only=args.dry_run or args.check_only
+                )
+                if not success and messages:
+                    if args.dry_run or args.check_only:
+                        result.needs_formatting = True
+                        result.changes.extend(messages)
+                    else:
+                        success, fix_messages = self.formatter.process_file(filepath, check_only=False)
+                        if success:
+                            result.changed = True
+                            result.changes.extend(fix_messages)
+
+            return result
+
+        except Exception as e:
+            result.errors.append(str(e))
+            return result
+
+    def process_directory(self, directory: Path, recursive: bool = True) -> BatchResult:
+        result = BatchResult()
+
+        if not directory.exists():
+            result.failed_files += 1
+            return result
+
+        pattern = "**/*" if recursive else "*"
+        files = list(directory.glob(pattern))
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_file = {
+                executor.submit(self.process_file, file): file
+                for file in files if file.is_file()
+            }
+
+            for future in as_completed(future_to_file):
+                try:
+                    file_result = future.result()
+                    result.add_result(file_result)
+                except Exception as e:
+                    result.failed_files += 1
+
+        return result
+
+    def check_directory(self, directory: Path, recursive: bool = True) -> BatchResult:
+        original_config = self.config
+        self.config = TabFixConfig(**original_config.to_dict())
+        self.config.dry_run = True
+        self.config.check_only = True
+
+        result = self.process_directory(directory, recursive)
+
+        self.config = original_config
+        return result
+
+    def autoformat_file(self, filepath: Path) -> FileResult:
+        result = FileResult(filepath=filepath)
+
+        if not self.formatter:
+            result.errors.append("Autoformat not available")
+            return result
+
+        try:
+            success, messages = self.formatter.process_file(filepath, check_only=False)
+            if success:
+                result.changed = True
+                result.changes.extend(messages)
+            else:
+                result.errors.extend(messages)
+        except Exception as e:
+            result.errors.append(str(e))
+
+        return result
+
+    def autoformat_directory(self, directory: Path, recursive: bool = True) -> BatchResult:
+        result = BatchResult()
+
+        if not self.formatter:
+            result.failed_files = 1
+            return result
+
+        pattern = "**/*" if recursive else "*"
+        files = list(directory.glob(pattern))
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_file = {
+                executor.submit(self.autoformat_file, file): file
+                for file in files if file.is_file()
+            }
+
+            for future in as_completed(future_to_file):
+                try:
+                    file_result = future.result()
+                    result.add_result(file_result)
+                except Exception as e:
+                    result.failed_files += 1
+
+        return result
+
+    def get_file_stats(self, filepath: Path) -> Dict[str, Any]:
+        try:
+            with open(filepath, 'rb') as f:
+                content = f.read().decode('utf-8-sig')
+
+            stats = self.tabfix.detect_indentation(content)
+            stats['encoding'] = 'utf-8-sig'
+            stats['size'] = filepath.stat().st_size
+            stats['lines'] = len(content.splitlines())
+
+            return stats
+        except Exception as e:
+            return {'error': str(e)}
+
+    def compare_files(self, file1: Path, file2: Path) -> Dict[str, Any]:
+        class Args:
+            quiet = True
+            no_color = True
+
+        args = Args()
+        return self.tabfix.compare_files_indentation(file1, file2)
+
+    def generate_config_file(self, filepath: Path = None) -> bool:
+        if not filepath:
+            filepath = Path.cwd() / '.tabfixrc.json'
+
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(self.config.to_dict(), f, indent=2)
+            return True
+        except Exception:
+            return False
+
+    def list_formatters(self) -> Dict[str, List[str]]:
+        available = get_available_formatters()
+
+        categories = {
+            'python': ['black', 'autopep8', 'isort', 'ruff', 'yapf'],
+            'javascript': ['prettier'],
+            'go': ['gofmt'],
+            'rust': ['rustfmt'],
+            'cpp': ['clang-format'],
         }
-        
-        output_file = Path(output_file)
-        with open(output_file, 'w', encoding='utf-8') as f:
-            yaml.dump(config, f, default_flow_style=False)
-        
-        return output_file
-    
-    def get_stats(self) -> Dict[str, int]:
-        return self._core.stats.copy()
-    
-    def reset_stats(self):
-        self._core.stats = {
-            "files_processed": 0,
-            "files_changed": 0,
-            "tabs_replaced": 0,
-            "lines_fixed": 0,
-            "bom_removed": 0,
-            "json_formatted": 0,
-            "mixed_indent_files": 0,
-            "files_skipped": 0,
-            "binary_files_skipped": 0,
-        }
-    
-    def format_json_string(self, content: str, **kwargs) -> str:
-        formatted, changed = self._core.format_json(content)
-        return formatted
-    
-    def normalize_string(self, content: str, **kwargs) -> str:
-        fixed, _ = self.fix_string(content, **kwargs)
-        return fixed
+
+        result = {}
+        for category, formatters in categories.items():
+            result[category] = [f for f in formatters if f in available]
+
+        result['available'] = available
+        return result
 
 
-def fix_string(content: str, **kwargs) -> str:
-    api = TabFixAPI(kwargs)
-    fixed, _ = api.fix_string(content, **kwargs)
-    return fixed
+# Factory functions
+def create_api(config: Optional[TabFixConfig] = None) -> TabFixAPI:
+    return TabFixAPI(config)
 
 
-def fix_file(filepath: Union[str, Path], **kwargs) -> bool:
-    api = TabFixAPI(kwargs)
-    result = api.fix_file(filepath, **kwargs)
-    return result.changed and not result.error
+def create_default_config() -> TabFixConfig:
+    return TabFixConfig()
 
 
-def check_string(content: str, **kwargs) -> Tuple[bool, List[str]]:
-    api = TabFixAPI(kwargs)
-    return api.check_file("dummy.py", **kwargs)
+def create_custom_config(**kwargs) -> TabFixConfig:
+    return TabFixConfig(**kwargs)
 
 
-def process_directory(directory: Union[str, Path], **kwargs) -> BatchResult:
-    api = TabFixAPI(kwargs)
-    return api.fix_directory(directory, **kwargs)
+# Helper functions
+def process_files(files: List[Union[str, Path]], config: Optional[TabFixConfig] = None) -> BatchResult:
+    api = TabFixAPI(config)
+    result = BatchResult()
+
+    for file_str in files:
+        filepath = Path(file_str) if isinstance(file_str, str) else file_str
+        if filepath.exists():
+            result.add_result(api.process_file(filepath))
+        else:
+            result.failed_files += 1
+
+    return result
 
 
-def create_default_config(output_file: Union[str, Path], format: str = "json"):
-    api = TabFixAPI()
-    api.create_config_file(output_file, format)
+def process_directory_parallel(
+    directory: Path,
+    config: Optional[TabFixConfig] = None,
+    max_workers: int = 4,
+    recursive: bool = True
+) -> BatchResult:
+    api = TabFixAPI(config)
+    return api.process_directory(directory, recursive)
 
 
-@contextmanager
-def session(**kwargs):
-    api = TabFixAPI(kwargs)
+def validate_config_file(filepath: Path) -> Tuple[bool, List[str]]:
+    errors = []
+
     try:
-        yield api
-    finally:
-        pass
+        with open(filepath, 'r') as f:
+            config_data = json.load(f)
+
+        valid_fields = {f.name for f in TabFixConfig.__dataclass_fields__.values()}
+
+        for key in config_data:
+            if key not in valid_fields:
+                errors.append(f"Unknown field: {key}")
+
+        return len(errors) == 0, errors
+
+    except json.JSONDecodeError as e:
+        return False, [f"Invalid JSON: {e}"]
+    except Exception as e:
+        return False, [str(e)]
+
+
+def create_project_config(
+    root_dir: Path,
+    project_type: Optional[str] = None,
+    **overrides
+) -> TabFixConfig:
+    config = TabFixConfig()
+
+    if project_type == 'python':
+        config.spaces = 4
+        config.fix_mixed = True
+        config.format_json = True
+        config.smart_processing = True
+
+    elif project_type == 'javascript':
+        config.spaces = 2
+        config.fix_mixed = True
+        config.format_json = True
+        config.smart_processing = True
+
+    elif project_type == 'go':
+        config.spaces = 4
+        config.fix_mixed = False
+        config.smart_processing = True
+
+    for key, value in overrides.items():
+        if hasattr(config, key):
+            setattr(config, key, value)
+
+    return config
+
+
+def export_results(results: BatchResult, format: str = 'json', output_file: Optional[Path] = None) -> str:
+    if format == 'json':
+        output = json.dumps(results.to_dict(), indent=2)
+    elif format == 'csv':
+        import csv
+        import io
+
+        output_io = io.StringIO()
+        writer = csv.writer(output_io)
+        writer.writerow(['File', 'Changed', 'Needs Formatting', 'Changes', 'Errors'])
+
+        for result in results.individual_results:
+            writer.writerow([
+                str(result.filepath),
+                result.changed,
+                result.needs_formatting,
+                '; '.join(result.changes),
+                '; '.join(result.errors)
+            ])
+
+        output = output_io.getvalue()
+    else:
+        output = str(results)
+
+    if output_file:
+        output_file.write_text(output)
+
+    return output
