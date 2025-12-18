@@ -2,7 +2,6 @@
 import sys
 import argparse
 from pathlib import Path
-from typing import List
 
 from .core import TabFix, Colors, print_color, GitignoreMatcher
 from .config import TabFixConfig, ConfigLoader, init_project
@@ -126,6 +125,25 @@ Examples:
         type=int,
         default=10 * 1024 * 1024,
         help="Maximum file size to process in bytes (default: 10MB)"
+    )
+
+    filetype_group = parser.add_argument_group("File type specific processing")
+    filetype_group.add_argument(
+        "--smart-processing",
+        action="store_true",
+        default=True,
+        help="Enable smart processing for different file types (default: True)"
+    )
+    filetype_group.add_argument(
+        "--no-smart-processing",
+        action="store_false",
+        dest="smart_processing",
+        help="Disable smart processing for different file types"
+    )
+    filetype_group.add_argument(
+        "--preserve-quotes",
+        action="store_true",
+        help="Preserve original string quotes in code files"
     )
 
     formatting_group = parser.add_argument_group("Formatting options")
@@ -365,7 +383,8 @@ def main():
 
         if file_processor and (args.autoformat or args.check_format):
             if args.verbose:
-                print_color(f"{'Checking' if args.check_format else 'Formatting'} {filepath}", Colors.CYAN)
+                mode = "Checking" if args.check_format else "Formatting"
+                print_color(f"{mode} {filepath}", Colors.CYAN)
 
             success, messages = file_processor.process_file(
                 filepath,
