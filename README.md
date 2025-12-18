@@ -152,7 +152,7 @@ Examples:
 
 ## install optional unifmt or dev/encoding/full 
 ```
-pip install tabfix-tool[unifmt] # or {optional}
+pip install tabfix-tool[all] # or {optional}
 ```
 
 ## API Documentation
