@@ -928,10 +928,14 @@ class TabFix:
     def process_file(
         self, filepath: Path, args, gitignore_matcher: Optional[GitignoreMatcher] = None
     ) -> bool:
-        self.stats["files_processed"] += 1
+        if '.git' in str(filepath.absolute()):
+            if getattr(args, 'verbose', False):
+                print_color(f"Skipped (.git directory): {filepath}", Colors.DIM)
+            self.stats["files_skipped"] += 1
+            return False
 
         if gitignore_matcher and gitignore_matcher.should_ignore(filepath):
-            if args.verbose:
+            if getattr(args, 'verbose', False):
                 print_color(f"Skipped (gitignore): {filepath}", Colors.DIM)
             self.stats["files_skipped"] += 1
             return False
@@ -941,137 +945,131 @@ class TabFix:
                 return False
 
             file_size = filepath.stat().st_size
-            if file_size > args.max_file_size:
-                if args.verbose:
+            if file_size > getattr(args, 'max_file_size', 10 * 1024 * 1024):
+                if getattr(args, 'verbose', False):
                     size_mb = file_size / (1024 * 1024)
                     print_color(f"Skipped (large file): {filepath} ({size_mb:.1f} MB)", Colors.YELLOW)
-                self.stats["files_skipped"] += 1
                 return False
 
             with open(filepath, "rb") as f:
                 raw_content = f.read()
-        except (IOError, OSError, PermissionError) as e:
-            if not args.quiet:
+        except PermissionError:
+            if not getattr(args, 'quiet', False):
+                print_color(f"Permission denied reading: {filepath}", Colors.RED)
+            self.stats["files_skipped"] += 1
+            return False
+        except Exception as e:
+            if not getattr(args, 'quiet', False):
                 print_color(f"Error reading {filepath}: {e}", Colors.RED)
             self.stats["files_skipped"] += 1
             return False
 
-        if args.skip_binary and self.is_likely_binary(raw_content, str(filepath)):
-            if args.verbose:
-                print_color(f"Skipped binary file: {filepath}", Colors.DIM)
-            self.stats["binary_files_skipped"] += 1
-            return False
-
-        had_bom = raw_content.startswith(b"\xef\xbb\xbf")
-        if args.remove_bom and had_bom:
-            raw_content = raw_content[3:]
-
-        if args.force_encoding:
-            try:
-                content = raw_content.decode(args.force_encoding)
-                encoding = args.force_encoding
-                encoding_confident = True
-            except (UnicodeDecodeError, LookupError) as e:
-                if not args.quiet:
-                    print_color(f"Failed to decode {filepath} with {args.force_encoding}: {e}", Colors.RED)
-                self.stats["files_skipped"] += 1
-                return False
-        else:
-            content, encoding, encoding_confident = self.detect_encoding_and_decode(
-                raw_content,
-                default_encoding=args.fallback_encoding
-            )
-
-            if not encoding_confident and args.warn_encoding:
-                print_color(f"Warning: Encoding detection uncertain for {filepath} (detected: {encoding})", Colors.YELLOW)
-
-        if args.skip_binary and self.is_binary_content(content, encoding):
-            if args.verbose:
-                print_color(f"Skipped binary-like content: {filepath}", Colors.DIM)
-            self.stats["binary_files_skipped"] += 1
-            return False
+        original_raw = raw_content
 
         changes = []
-        if had_bom and args.remove_bom:
+        try:
+            content = raw_content.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            if getattr(args, 'skip_binary', True):
+                if getattr(args, 'verbose', False):
+                    print_color(f"Skipped (binary/unreadable): {filepath}", Colors.DIM)
+                self.stats["files_skipped"] += 1
+                return False
+            else:
+                if not getattr(args, 'quiet', False):
+                    print_color(f"Cannot decode file: {filepath}", Colors.YELLOW)
+                self.stats["files_skipped"] += 1
+                return False
+
+        had_bom = raw_content.startswith(b"\xef\xbb\xbf")
+
+        if getattr(args, 'remove_bom', False) and had_bom:
             changes.append("Removed BOM")
 
-        if args.smart_processing:
-            processed_content, type_changes = self.file_processor.process_by_extension(content, filepath)
-            changes.extend(type_changes)
-        else:
-            processed_content = content
+        if getattr(args, 'format_json', False) and filepath.suffix.lower() == ".json":
+            formatted, changed = self.format_json(content)
+            if changed:
+                content = formatted
+                changes.append("Formatted JSON")
+                self.stats["json_formatted"] += 1
 
-        if args.fix_mixed:
-            fixed_content, indent_changes = self.fix_mixed_indentation(processed_content)
-            if fixed_content != processed_content:
-                processed_content = fixed_content
+        if getattr(args, 'fix_mixed', False):
+            fixed_content, indent_changes = self.fix_mixed_indentation(content)
+            if fixed_content != content:
+                content = fixed_content
                 changes.extend(indent_changes)
                 if indent_changes:
                     self.stats["tabs_replaced"] += len(indent_changes)
                     self.stats["lines_fixed"] += len(indent_changes)
 
-        if args.fix_trailing:
-            fixed_content, trailing_changes = self.fix_trailing_spaces(processed_content)
-            if fixed_content != processed_content:
-                processed_content = fixed_content
+        if getattr(args, 'fix_trailing', False):
+            fixed_content, trailing_changes = self.fix_trailing_spaces(content)
+            if fixed_content != content:
+                content = fixed_content
                 changes.extend(trailing_changes)
                 if trailing_changes:
                     self.stats["lines_fixed"] += len(trailing_changes)
 
-        if args.final_newline:
-            processed_content, newline_changes = self.ensure_final_newline(processed_content)
+        if getattr(args, 'final_newline', False):
+            content, newline_changes = self.ensure_final_newline(content)
             changes.extend(newline_changes)
-
-        if args.format_json and filepath.suffix.lower() == ".json":
-            formatted, changed = self.format_json(processed_content)
-            if changed:
-                processed_content = formatted
-                changes.append("Formatted JSON")
-                self.stats["json_formatted"] += 1
 
         if not changes:
             return False
 
-        if args.interactive and not self.interactive_confirm(filepath, changes):
+        if getattr(args, 'interactive', False) and not self.interactive_confirm(filepath, changes):
             return False
 
-        if args.remove_bom and had_bom:
-            output_encoding = 'utf-8'
-        elif args.keep_bom and had_bom:
-            output_encoding = 'utf-8-sig'
-        elif args.force_encoding:
-            output_encoding = args.force_encoding
+        if getattr(args, 'keep_bom', False) and had_bom:
+            new_raw = self.add_bom(content.encode("utf-8"))
         else:
-            output_encoding = encoding
+            new_raw = content.encode("utf-8")
 
-        try:
-            new_raw = processed_content.encode(output_encoding)
-        except (UnicodeEncodeError, LookupError) as e:
-            if not args.quiet:
-                print_color(f"Failed to encode {filepath} to {output_encoding}: {e}", Colors.RED)
+        if new_raw == original_raw:
             return False
 
-        if new_raw == raw_content:
-            return False
+        if getattr(args, 'backup', False):
+            try:
+                backup_path = filepath.with_suffix(filepath.suffix + ".bak")
+                with open(backup_path, "wb") as f:
+                    f.write(original_raw)
+            except Exception as e:
+                if not getattr(args, 'quiet', False):
+                    print_color(f"Failed to create backup for {filepath}: {e}", Colors.YELLOW)
 
-        if args.backup:
-            backup_path = filepath.with_suffix(filepath.suffix + ".bak")
-            with open(backup_path, "wb") as f:
-                f.write(raw_content)
+        if not getattr(args, 'dry_run', False):
+            try:
+                with open(filepath, "wb") as f:
+                    f.write(new_raw)
 
-        if not args.dry_run:
-            with open(filepath, "wb") as f:
-                f.write(new_raw)
+                if had_bom and getattr(args, 'remove_bom', False):
+                    self.stats["bom_removed"] += 1
 
-            if had_bom and args.remove_bom:
-                self.stats["bom_removed"] += 1
-
-        self.stats["files_changed"] += 1
-        if args.verbose:
-            change_summary = self.summarize_changes(changes)
-            print_color(f"Fixed: {filepath} ({change_summary})", Colors.GREEN)
-
-        return True
+                self.stats["files_changed"] += 1
+                if getattr(args, 'verbose', False):
+                    change_summary = ", ".join([c.split(":")[0] for c in changes[:3]])
+                    if len(changes) > 3:
+                        change_summary += f" and {len(changes) - 3} more"
+                    print_color(f"Fixed: {filepath} ({change_summary})", Colors.GREEN)
+                return True
+            except PermissionError:
+                if not getattr(args, 'quiet', False):
+                    print_color(f"Permission denied writing: {filepath}", Colors.RED)
+                self.stats["files_skipped"] += 1
+                return False
+            except Exception as e:
+                if not getattr(args, 'quiet', False):
+                    print_color(f"Error writing {filepath}: {e}", Colors.RED)
+                self.stats["files_skipped"] += 1
+                return False
+        else:
+            self.stats["files_changed"] += 1
+            if getattr(args, 'verbose', False):
+                change_summary = ", ".join([c.split(":")[0] for c in changes[:3]])
+                if len(changes) > 3:
+                    change_summary += f" and {len(changes) - 3} more"
+                print_color(f"Would fix: {filepath} ({change_summary})", Colors.GREEN)
+            return True
 
     def compare_files(self, file1: Path, file2: Path, args):
         result = self.compare_files_indentation(file1, file2)
