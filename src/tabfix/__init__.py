@@ -1,51 +1,43 @@
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 from .core import TabFix, Colors, print_color, GitignoreMatcher
 from .config import TabFixConfig, ConfigLoader
-from .autoformat import Formatter, FormatterManager, FileProcessor, get_available_formatters, create_autoformat_config
-
+from .autoformat import Formatter, FileProcessor, get_available_formatters
 
 from .api import (
     TabFixAPI,
+    AsyncTabFixAPI,
     FileResult,
     BatchResult,
+    DirectoryWatcher,
+    GitIntegrator,
     create_api,
-    create_default_config,
-    create_custom_config,
+    create_async_api,
     process_files,
-    process_directory_parallel,
-    validate_config_file,
     create_project_config,
-    export_results,
+    validate_config_file,
 )
 
 __all__ = [
-    # core
     "TabFix",
     "Colors",
     "print_color",
     "GitignoreMatcher",
     "TabFixConfig",
     "ConfigLoader",
-
-    # autoformat
     "Formatter",
-    "FormatterManager",
     "FileProcessor",
     "get_available_formatters",
-    "create_autoformat_config",
-    # api
     "TabFixAPI",
+    "AsyncTabFixAPI",
     "FileResult",
     "BatchResult",
+    "DirectoryWatcher",
+    "GitIntegrator",
     "create_api",
-    "create_default_config",
-    "create_custom_config",
+    "create_async_api",
     "process_files",
-    "process_directory_parallel",
-    "validate_config_file",
     "create_project_config",
-    "export_results",
-
+    "validate_config_file",
     "__version__",
 ]
