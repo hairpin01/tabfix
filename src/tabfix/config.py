@@ -34,19 +34,20 @@ class TabFixConfig:
     preserve_quotes: bool = False
     progress: bool = False
     dry_run: bool = False
+    check_only: bool = False
     backup: bool = False
     verbose: bool = False
     quiet: bool = False
     no_color: bool = False
-    
+
     git_staged: bool = False
     git_unstaged: bool = False
     git_all_changed: bool = False
     no_gitignore: bool = False
-    
+
     include_patterns: list = field(default_factory=list)
     exclude_patterns: list = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
     
