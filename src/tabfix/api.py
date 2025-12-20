@@ -180,45 +180,45 @@ class TabFixAPI:
             result.errors.append(str(e))
             return content, result
 
-def process_file(self, filepath: Path) -> FileResult:
-    result = FileResult(filepath=filepath)
+    def process_file(self, filepath: Path) -> FileResult:
+        result = FileResult(filepath=filepath)
 
-    if self.backup_handler and not (self.config.dry_run or self.config.check_only):
-        result.backup_path = self.backup_handler.create_backup(filepath)
+        if self.backup_handler and not (self.config.dry_run or self.config.check_only):
+            result.backup_path = self.backup_handler.create_backup(filepath)
 
-    class Args:
-        def __init__(self, config):
-            for key, value in config.to_dict().items():
-                setattr(self, key, value)
-            if not hasattr(self, 'check_only'):
-                setattr(self, 'check_only', getattr(config, 'check_only', False))
+        class Args:
+            def __init__(self, config):
+                for key, value in config.to_dict().items():
+                    setattr(self, key, value)
+                if not hasattr(self, 'check_only'):
+                    setattr(self, 'check_only', getattr(config, 'check_only', False))
 
-    args = Args(self.config)
+        args = Args(self.config)
 
-    try:
-        changed = self.tabfix.process_file(filepath, args, None)
-        result.changed = changed
+        try:
+            changed = self.tabfix.process_file(filepath, args, None)
+            result.changed = changed
 
-        if self.formatter:
-            success, messages = self.formatter.process_file(
-                filepath,
-                check_only=getattr(args, 'check_only', False) or getattr(args, 'dry_run', False)
-            )
-            if not success and messages:
-                if getattr(args, 'check_only', False) or getattr(args, 'dry_run', False):
-                    result.needs_formatting = True
-                    result.changes.extend(messages)
-                else:
-                    success, fix_messages = self.formatter.process_file(filepath, check_only=False)
-                    if success:
-                        result.changed = True
-                        result.changes.extend(fix_messages)
+            if self.formatter:
+                success, messages = self.formatter.process_file(
+                    filepath,
+                    check_only=getattr(args, 'check_only', False) or getattr(args, 'dry_run', False)
+                )
+                if not success and messages:
+                    if getattr(args, 'check_only', False) or getattr(args, 'dry_run', False):
+                        result.needs_formatting = True
+                        result.changes.extend(messages)
+                    else:
+                        success, fix_messages = self.formatter.process_file(filepath, check_only=False)
+                        if success:
+                            result.changed = True
+                            result.changes.extend(fix_messages)
 
-        return result
+            return result
 
-    except Exception as e:
-        result.errors.append(str(e))
-        return result
+        except Exception as e:
+            result.errors.append(str(e))
+            return result
 
     def process_directory(self,
                          directory: Path,
