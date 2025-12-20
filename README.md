@@ -7,7 +7,7 @@
 [![GitHub issues](https://img.shields.io/github/issues-raw/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/issues)
 [![GitHub forks](https://img.shields.io/github/forks/hairpin01/tabfix?style=flat)](https://github.com/hairpin01/tabfix/network/members)
 [![GitHub stars](https://img.shields.io/github/stars/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/stargazers)
-[![GitHub license](https://img.shields.io/github/license/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/blob/main/LICENSE)
+[![GitHub license](https://img.shields.io/github/license/hairpin01/tabfix)](https://github.com/hairpin01/tabfix/blob/main/LICENSE) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 # TabFix Tool
 Advanced tool for fixing `tab/space` indentation issues in `code` files.
