@@ -241,4 +241,420 @@ print(f"Indentation: {result}")
 # Create config file
 create_config_file(Path(".tabfixrc.json"))
 ```
+
+**telegram bot**
+
+```python
+#!/usr/bin/env python3
+import asyncio
+import logging
+import tempfile
+from pathlib import Path
+from typing import Optional
+import json
+import shutil
+
+from telegram import Update, BotCommand, InputFile
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.constants import ChatAction
+
+from tabfix import TabFixAPI, TabFixConfig, fix_string, detect_indentation
+
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+SUPPORTED_EXTENSIONS = {
+    '.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.yaml', '.yml',
+    '.md', '.txt', '.html', '.htm', '.css', '.scss', '.sass',
+    '.xml', '.ini', '.cfg', '.toml', '.sh', '.bash', '.zsh',
+    '.cpp', '.c', '.h', '.hpp', '.java', '.go', '.rs'
+}
+
+class TabFixBot:
+    def __init__(self, token: str, admin_ids: list = None):
+        self.token = token
+        self.admin_ids = admin_ids or []
+        self.config = TabFixConfig(spaces=4, fix_mixed=True, fix_trailing=True, final_newline=True)
+        self.api = TabFixAPI(self.config)
+        self.max_file_size = 10 * 1024 * 1024  # 10MB
+        
+    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        welcome_text = """👋 *TabFix Bot*
+
+I can fix indentation and formatting issues in your code files!
+
+*Supported formats:*
+• Python (.py)
+• JavaScript/TypeScript (.js, .ts, .jsx, .tsx)
+• JSON (.json)
+• YAML (.yaml, .yml)
+• Markdown (.md)
+• HTML/CSS (.html, .css)
+• Shell scripts (.sh, .bash)
+• C/C++/Java/Go/Rust
+
+*How to use:*
+1. Send me a code file
+2. I'll fix indentation, trailing spaces, and formatting
+3. I'll send back the fixed file
+
+*Commands:*
+/start - Show this message
+/help - Show help
+/fixconfig - Show current config
+/setspaces <N> - Set spaces per tab (default: 4)
+/fixmixed <on/off> - Toggle mixed indentation fixing
+/fixtrailing <on/off> - Toggle trailing space fixing
+/newline <on/off> - Toggle final newline
+
+*Example:* Send me a Python file with mixed tabs and spaces."""
+        
+        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+    
+    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        help_text = """📚 *Help*
+
+Send me any code file and I'll fix:
+• Mixed tabs/spaces indentation
+• Trailing whitespace
+• Missing final newline
+• JSON formatting
+
+*Quick commands:*
+/setspaces 2 - Use 2 spaces per tab
+/fixmixed off - Don't fix mixed indentation
+/fixtrailing on - Fix trailing spaces
+/newline on - Ensure final newline
+
+*Admin commands* (if you're admin):
+/config <json> - Set custom configuration
+/stats - Show bot statistics
+"""
+        
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    
+    async def show_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        config = self.api.config.to_dict()
+        config_str = json.dumps(config, indent=2, default=str)
+        await update.message.reply_text(f"```json\n{config_str}\n```", parse_mode='Markdown')
+    
+    async def set_spaces(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if not context.args:
+                await update.message.reply_text("Usage: /setspaces <number>")
+                return
+            
+            spaces = int(context.args[0])
+            if spaces < 1 or spaces > 8:
+                await update.message.reply_text("Please use a number between 1 and 8")
+                return
+            
+            self.config.spaces = spaces
+            self.api = TabFixAPI(self.config)
+            await update.message.reply_text(f"✅ Spaces per tab set to {spaces}")
+        except ValueError:
+            await update.message.reply_text("Please provide a valid number")
+    
+    async def toggle_fix_mixed(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if not context.args:
+                await update.message.reply_text("Usage: /fixmixed <on/off>")
+                return
+            
+            state = context.args[0].lower()
+            if state == 'on':
+                self.config.fix_mixed = True
+                await update.message.reply_text("✅ Mixed indentation fixing enabled")
+            elif state == 'off':
+                self.config.fix_mixed = False
+                await update.message.reply_text("✅ Mixed indentation fixing disabled")
+            else:
+                await update.message.reply_text("Please use 'on' or 'off'")
+            
+            self.api = TabFixAPI(self.config)
+        except Exception as e:
+            logger.error(f"Error in toggle_fix_mixed: {e}")
+            await update.message.reply_text("❌ Error updating setting")
+    
+    async def toggle_fix_trailing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if not context.args:
+                await update.message.reply_text("Usage: /fixtrailing <on/off>")
+                return
+            
+            state = context.args[0].lower()
+            if state == 'on':
+                self.config.fix_trailing = True
+                await update.message.reply_text("✅ Trailing space fixing enabled")
+            elif state == 'off':
+                self.config.fix_trailing = False
+                await update.message.reply_text("✅ Trailing space fixing disabled")
+            else:
+                await update.message.reply_text("Please use 'on' or 'off'")
+            
+            self.api = TabFixAPI(self.config)
+        except Exception as e:
+            logger.error(f"Error in toggle_fix_trailing: {e}")
+            await update.message.reply_text("❌ Error updating setting")
+    
+    async def toggle_newline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            if not context.args:
+                await update.message.reply_text("Usage: /newline <on/off>")
+                return
+            
+            state = context.args[0].lower()
+            if state == 'on':
+                self.config.final_newline = True
+                await update.message.reply_text("✅ Final newline enforcement enabled")
+            elif state == 'off':
+                self.config.final_newline = False
+                await update.message.reply_text("✅ Final newline enforcement disabled")
+            else:
+                await update.message.reply_text("Please use 'on' or 'off'")
+            
+            self.api = TabFixAPI(self.config)
+        except Exception as e:
+            logger.error(f"Error in toggle_newline: {e}")
+            await update.message.reply_text("❌ Error updating setting")
+    
+    async def process_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.chat.send_action(ChatAction.TYPING)
+        
+        document = update.message.document
+        if not document:
+            await update.message.reply_text("❌ Please send a file")
+            return
+        
+        file_size = document.file_size
+        if file_size > self.max_file_size:
+            await update.message.reply_text(f"❌ File too large ({file_size / 1024:.0f}KB). Max size is 10MB")
+            return
+        
+        file_ext = Path(document.file_name).suffix.lower()
+        if file_ext not in SUPPORTED_EXTENSIONS:
+            await update.message.reply_text(f"❌ Unsupported file type: {file_ext}")
+            await update.message.reply_text(f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            return
+        
+        try:
+            temp_dir = Path(tempfile.mkdtemp(prefix="tabfix_"))
+            original_path = temp_dir / document.file_name
+            
+            file = await context.bot.get_file(document.file_id)
+            await file.download_to_drive(original_path)
+            
+            logger.info(f"Processing file: {original_path}, size: {file_size} bytes")
+            
+            changed, changes = self.api.fix_file(original_path)
+            
+            if not changed:
+                await update.message.reply_text("✅ File is already properly formatted!")
+                shutil.rmtree(temp_dir)
+                return
+            
+            fixed_path = temp_dir / f"fixed_{document.file_name}"
+            shutil.copy(original_path, fixed_path)
+            
+            with open(fixed_path, 'rb') as f:
+                await update.message.reply_document(
+                    document=InputFile(f, filename=f"fixed_{document.file_name}"),
+                    caption=f"✅ Fixed {len(changes)} issue(s)\nChanges: {', '.join(changes[:3])}"
+                )
+            
+            shutil.rmtree(temp_dir)
+            
+        except Exception as e:
+            logger.error(f"Error processing file: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Error processing file: {str(e)}")
+    
+    async def process_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.chat.send_action(ChatAction.TYPING)
+        
+        text = update.message.text
+        if not text or len(text) < 10:
+            await update.message.reply_text("❌ Please send code text to fix")
+            return
+        
+        if len(text) > 4000:
+            await update.message.reply_text("❌ Text too long. Please send as a file for large code")
+            return
+        
+        try:
+            fixed_text, changes = fix_string(text, spaces=self.config.spaces)
+            
+            if not changes:
+                await update.message.reply_text("✅ Text is already properly formatted!")
+                return
+            
+            await update.message.reply_text(
+                f"```\n{fixed_text}\n```\n\n"
+                f"✅ Fixed {len(changes)} issue(s)\n"
+                f"Changes: {', '.join(changes)}",
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error processing text: {e}")
+            await update.message.reply_text(f"❌ Error processing text: {str(e)}")
+    
+    async def detect_indent(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.chat.send_action(ChatAction.TYPING)
+        
+        text = update.message.text
+        if not text or len(text) < 10:
+            await update.message.reply_text("❌ Please send code text to analyze")
+            return
+        
+        try:
+            result = detect_indentation(text)
+            
+            message = f"*Indentation Analysis*\n\n"
+            message += f"Uses tabs: {'✅ Yes' if result['uses_tabs'] else '❌ No'}\n"
+            message += f"Uses spaces: {'✅ Yes' if result['uses_spaces'] else '❌ No'}\n"
+            message += f"Mixed indentation: {'⚠️ Yes' if result['mixed'] else '✅ No'}\n"
+            
+            if result['common_indent']:
+                message += f"Common indent size: {result['common_indent']}\n"
+            
+            message += f"Total lines: {result['total_lines']}\n"
+            message += f"Indented lines: {result['indented_lines']}\n\n"
+            
+            if result['mixed']:
+                message += "*Recommendation:* Run /fixmixed on to fix mixed indentation"
+            
+            await update.message.reply_text(message, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"Error detecting indent: {e}")
+            await update.message.reply_text(f"❌ Error analyzing text: {str(e)}")
+    
+    async def set_custom_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id not in self.admin_ids:
+            await update.message.reply_text("❌ Admin only command")
+            return
+        
+        try:
+            if not context.args:
+                await update.message.reply_text("Usage: /config <json_config>")
+                return
+            
+            config_json = ' '.join(context.args)
+            config_dict = json.loads(config_json)
+            
+            self.config.update_from_dict(config_dict)
+            self.api = TabFixAPI(self.config)
+            
+            await update.message.reply_text("✅ Configuration updated successfully")
+            
+        except json.JSONDecodeError:
+            await update.message.reply_text("❌ Invalid JSON format")
+        except Exception as e:
+            logger.error(f"Error setting config: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+    
+    async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.effective_user.id not in self.admin_ids:
+            await update.message.reply_text("❌ Admin only command")
+            return
+        
+        stats = {
+            "spaces_per_tab": self.config.spaces,
+            "fix_mixed": self.config.fix_mixed,
+            "fix_trailing": self.config.fix_trailing,
+            "final_newline": self.config.final_newline,
+            "max_file_size": self.max_file_size,
+        }
+        
+        stats_str = json.dumps(stats, indent=2)
+        await update.message.reply_text(f"```json\n{stats_str}\n```", parse_mode='Markdown')
+    
+    def setup_handlers(self, application: Application):
+        application.add_handler(CommandHandler("start", self.start))
+        application.add_handler(CommandHandler("help", self.help_command))
+        application.add_handler(CommandHandler("fixconfig", self.show_config))
+        application.add_handler(CommandHandler("setspaces", self.set_spaces))
+        application.add_handler(CommandHandler("fixmixed", self.toggle_fix_mixed))
+        application.add_handler(CommandHandler("fixtrailing", self.toggle_fix_trailing))
+        application.add_handler(CommandHandler("newline", self.toggle_newline))
+        application.add_handler(CommandHandler("config", self.set_custom_config))
+        application.add_handler(CommandHandler("stats", self.show_stats))
+        application.add_handler(CommandHandler("detect", self.detect_indent))
+        
+        application.add_handler(MessageHandler(filters.Document.ALL, self.process_file))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_text))
+    
+    async def setup_bot_commands(self, application: Application):
+        commands = [
+            BotCommand("start", "Start the bot"),
+            BotCommand("help", "Show help"),
+            BotCommand("fixconfig", "Show current configuration"),
+            BotCommand("setspaces", "Set spaces per tab"),
+            BotCommand("fixmixed", "Toggle mixed indentation fixing"),
+            BotCommand("fixtrailing", "Toggle trailing space fixing"),
+            BotCommand("newline", "Toggle final newline"),
+            BotCommand("detect", "Analyze indentation"),
+        ]
+        
+        if self.admin_ids:
+            commands.extend([
+                BotCommand("config", "Set custom config (admin)"),
+                BotCommand("stats", "Show bot stats (admin)"),
+            ])
+        
+        await application.bot.set_my_commands(commands)
+    
+    async def run(self):
+        application = Application.builder().token(self.token).build()
+        
+        self.setup_handlers(application)
+        await self.setup_bot_commands(application)
+        
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        logger.info("Bot started successfully")
+        
+        try:
+            await asyncio.Future()
+        except KeyboardInterrupt:
+            logger.info("Shutting down bot...")
+            await application.stop()
+            logger.info("Bot stopped")
+
+
+def main():
+    import os
+    from dotenv import load_dotenv
+    
+    load_dotenv()
+    
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    ADMIN_IDS = [int(id.strip()) for id in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if id.strip()]
+    
+    if not TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN environment variable is required")
+        print("Create a .env file with:")
+        print("TELEGRAM_BOT_TOKEN=your_bot_token_here")
+        print("TELEGRAM_ADMIN_IDS=123456789,987654321 (optional)")
+        return
+    
+    bot = TabFixBot(token=TOKEN, admin_ids=ADMIN_IDS)
+    
+    print(f"Starting TabFix Telegram Bot...")
+    print(f"Admin IDs: {ADMIN_IDS}")
+    print("Press Ctrl+C to stop")
+    
+    asyncio.run(bot.run())
+
+
+if __name__ == "__main__":
+    main()
+```
+
 </details>
