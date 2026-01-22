@@ -242,7 +242,7 @@ print(f"Indentation: {result}")
 create_config_file(Path(".tabfixrc.json"))
 ```
 
-**telegram bot**
+**Telegram Bot**
 
 ```python
 #!/usr/bin/env python3
