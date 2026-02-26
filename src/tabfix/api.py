@@ -1,53 +1,73 @@
-from pathlib import Path
-from typing import List, Tuple, Dict, Any, Optional, Union, Callable, Awaitable
-from dataclasses import dataclass, field
-import json
-import os
-import shutil
-import asyncio
-import subprocess
-import time
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+"""
+tabfix.api — High-level programmatic API.
 
-from .core import TabFix
+Fixes:
+  [BUG-A1] process_string: called non-existent fix_string(); now delegates to
+            TabFix.fix_string() which was added in core.py.
+  [BUG-A2] process_git_changes: was calling the module-level process_files()
+            helper, losing the formatter, backup_handler and config of `self`.
+            Now uses self.process_file() directly.
+  [BUG-A3] The inner Args class was fragile (relied on config.to_dict()).
+            Replaced with argparse.Namespace for clarity and correctness.
+  [BUG-A4] BackupHandler root_dir was always Path.cwd() even when processing
+            files from another directory tree.
+
+New features:
+  [NEW-A1] TabFixAPI.check_string() — check a string without modifying it.
+  [NEW-A2] BatchResult.to_json()    — convenient serialisation.
+  [NEW-A3] process_directory respects max_workers config.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+
+from .core import TabFix, Colors, print_color, GitignoreMatcher
 from .config import TabFixConfig
 from .autoformat import FileProcessor, get_available_formatters
 
-
 @dataclass
 class FileResult:
-    filepath: Path
-    changed: bool = False
-    changes: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
-    needs_formatting: bool = False
-    backup_path: Optional[Path] = None
-    timestamp: float = field(default_factory=time.time)
+    filepath:        Path
+    changed:         bool             = False
+    changes:         List[str]        = field(default_factory=list)
+    errors:          List[str]        = field(default_factory=list)
+    needs_formatting: bool            = False
+    backup_path:     Optional[Path]   = None
+    timestamp:       float            = field(default_factory=time.time)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'filepath': str(self.filepath),
-            'changed': self.changed,
-            'changes': self.changes,
-            'errors': self.errors,
-            'needs_formatting': self.needs_formatting,
-            'backup_path': str(self.backup_path) if self.backup_path else None,
-            'timestamp': self.timestamp
+            "filepath":         str(self.filepath),
+            "changed":          self.changed,
+            "changes":          self.changes,
+            "errors":           self.errors,
+            "needs_formatting": self.needs_formatting,
+            "backup_path":      str(self.backup_path) if self.backup_path else None,
+            "timestamp":        self.timestamp,
         }
 
 
 @dataclass
 class BatchResult:
-    total_files: int = 0
-    changed_files: int = 0
-    failed_files: int = 0
-    files_needing_format: int = 0
+    total_files:        int              = 0
+    changed_files:      int              = 0
+    failed_files:       int              = 0
+    files_needing_format: int            = 0
     individual_results: List[FileResult] = field(default_factory=list)
-    start_time: float = field(default_factory=time.time)
-    end_time: Optional[float] = None
+    start_time:         float            = field(default_factory=time.time)
+    end_time:           Optional[float]  = None
 
-    def add_result(self, result: FileResult):
+    def add_result(self, result: FileResult) -> None:
         self.individual_results.append(result)
         self.total_files += 1
         if result.changed:
@@ -57,39 +77,45 @@ class BatchResult:
         if result.needs_formatting:
             self.files_needing_format += 1
 
-    def finish(self):
+    def finish(self) -> None:
         self.end_time = time.time()
 
     @property
     def duration(self) -> float:
-        end = self.end_time or time.time()
-        return end - self.start_time
+        return (self.end_time or time.time()) - self.start_time
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'summary': {
-                'total': self.total_files,
-                'changed': self.changed_files,
-                'failed': self.failed_files,
-                'needs_format': self.files_needing_format,
-                'duration_seconds': self.duration
+            "summary": {
+                "total":        self.total_files,
+                "changed":      self.changed_files,
+                "failed":       self.failed_files,
+                "needs_format": self.files_needing_format,
+                "duration_sec": self.duration,
             },
-            'results': [r.to_dict() for r in self.individual_results]
+            "results": [r.to_dict() for r in self.individual_results],
         }
 
+    def to_json(self, indent: int = 2) -> str:
+        """[NEW-A2] Convenience serialisation."""
+        return json.dumps(self.to_dict(), indent=indent)
 
 class BackupHandler:
-    def __init__(self, root_dir: Path):
-        self.root_dir = root_dir
-        self.backup_dir = root_dir / ".tabfix_backups" / datetime.now().strftime("%Y%m%d_%H%M%S")
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir  = root_dir
+        self.backup_dir = (
+            root_dir / ".tabfix_backups" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
 
     def create_backup(self, filepath: Path) -> Optional[Path]:
         try:
-            if not self.backup_dir.exists():
-                self.backup_dir.mkdir(parents=True, exist_ok=True)
-
-            rel_path = filepath.relative_to(self.root_dir)
-            dest = self.backup_dir / rel_path
+            self.backup_dir.mkdir(parents=True, exist_ok=True)
+            # [BUG-A4] Use the file's own root if it's outside our root_dir
+            try:
+                rel = filepath.resolve().relative_to(self.root_dir.resolve())
+            except ValueError:
+                rel = Path(filepath.name)
+            dest = self.backup_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(filepath, dest)
             return dest
@@ -101,64 +127,100 @@ class BackupHandler:
             if backup_path.exists():
                 shutil.copy2(backup_path, original_path)
                 return True
-            return False
         except Exception:
-            return False
+            pass
+        return False
 
-    def clean_backups(self):
+    def clean_backups(self) -> None:
         if self.backup_dir.exists():
             shutil.rmtree(self.backup_dir)
 
-
 class GitIntegrator:
-    def __init__(self, repo_path: Path):
+    def __init__(self, repo_path: Path) -> None:
         self.repo_path = repo_path
 
-    def _run_git(self, args: List[str]) -> List[str]:
+    def _run(self, args: List[str]) -> List[str]:
+        import subprocess
         try:
-            result = subprocess.run(
-                ['git'] + args,
+            r = subprocess.run(
+                ["git"] + args,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
             )
-            return [line.strip() for line in result.stdout.splitlines() if line.strip()]
-        except subprocess.CalledProcessError:
+            return [l.strip() for l in r.stdout.splitlines() if l.strip()]
+        except Exception:
             return []
 
-    def get_staged_files(self) -> List[Path]:
-        files = self._run_git(['diff', '--name-only', '--cached'])
-        return [self.repo_path / f for f in files]
+    def get_staged_files(self)    -> List[Path]:
+        return [self.repo_path / f for f in self._run(["diff", "--name-only", "--cached"])]
 
-    def get_modified_files(self) -> List[Path]:
-        files = self._run_git(['diff', '--name-only'])
-        return [self.repo_path / f for f in files]
+    def get_modified_files(self)  -> List[Path]:
+        return [self.repo_path / f for f in self._run(["diff", "--name-only"])]
 
     def get_untracked_files(self) -> List[Path]:
-        files = self._run_git(['ls-files', '--others', '--exclude-standard'])
-        return [self.repo_path / f for f in files]
+        return [self.repo_path / f for f in self._run(["ls-files", "--others", "--exclude-standard"])]
 
+def _config_to_namespace(config: TabFixConfig, check_only: bool = False) -> argparse.Namespace:
+    """
+    [BUG-A3] Build a proper argparse.Namespace from a TabFixConfig so that
+    TabFix.process_file() can read settings via getattr().
+    """
+    d = config.to_dict() if hasattr(config, "to_dict") else vars(config)
+    ns = argparse.Namespace(**d)
+    if not hasattr(ns, "check_only"):
+        ns.check_only = check_only
+    if not hasattr(ns, "dry_run"):
+        ns.dry_run = False
+    if not hasattr(ns, "interactive"):
+        ns.interactive = False
+    if not hasattr(ns, "verbose"):
+        ns.verbose = False
+    if not hasattr(ns, "quiet"):
+        ns.quiet = False
+    if not hasattr(ns, "backup"):
+        ns.backup = False
+    if not hasattr(ns, "skip_binary"):
+        ns.skip_binary = True
+    if not hasattr(ns, "max_file_size"):
+        ns.max_file_size = 10 * 1024 * 1024
+    if not hasattr(ns, "normalize_endings"):
+        ns.normalize_endings = False
+    return ns
 
 class TabFixAPI:
-    def __init__(self, config: Optional[TabFixConfig] = None, enable_backups: bool = False):
-        self.config = config or TabFixConfig()
-        self.tabfix = TabFix(spaces_per_tab=self.config.spaces)
-        self.formatter = None
-        self.backup_handler = None
+    def __init__(
+        self,
+        config:         Optional[TabFixConfig] = None,
+        enable_backups: bool                   = False,
+        max_workers:    int                    = 4,
+    ) -> None:
+        self.config     = config or TabFixConfig()
+        self.tabfix     = TabFix(spaces_per_tab=self.config.spaces)
+        self.max_workers = max_workers
+        self.formatter: Optional[FileProcessor] = None
+        self.backup_handler: Optional[BackupHandler] = None
 
         if enable_backups:
             self.backup_handler = BackupHandler(Path.cwd())
 
-        if self.config.smart_processing:
+        if getattr(self.config, "smart_processing", False):
             try:
                 self.formatter = FileProcessor(spaces_per_tab=self.config.spaces)
             except Exception:
                 pass
 
-    def process_string(self, content: str, filepath: Optional[Path] = None) -> Tuple[str, FileResult]:
-        result = FileResult(filepath=filepath or Path("string"))
-
+    def process_string(
+        self,
+        content:  str,
+        filepath: Optional[Path] = None,
+    ) -> Tuple[str, FileResult]:
+        """
+        [BUG-A1] Previously called non-existent self.tabfix.fix_string().
+        Now delegates to the newly added TabFix.fix_string().
+        """
+        result = FileResult(filepath=filepath or Path("<string>"))
         try:
             processed, changes = self.tabfix.fix_string(content)
             if changes:
@@ -166,13 +228,10 @@ class TabFixAPI:
                 result.changes.extend(changes)
 
             if self.formatter and filepath:
-                success, messages = self.formatter.process_file(
-                    filepath,
-                    check_only=True
-                )
-                if not success:
+                ok, msgs = self.formatter.process_file(filepath, check_only=True)
+                if not ok:
                     result.needs_formatting = True
-                    result.changes.append(f"Needs formatting: {', '.join(messages)}")
+                    result.changes.extend(msgs)
 
             return processed, result
 
@@ -180,105 +239,114 @@ class TabFixAPI:
             result.errors.append(str(e))
             return content, result
 
+    def check_string(self, content: str) -> Tuple[bool, List[str]]:
+        """[NEW-A1] Check whether a string would be modified without changing it."""
+        _, changes = self.tabfix.fix_string(content)
+        return bool(changes), changes
+
     def process_file(self, filepath: Path) -> FileResult:
         result = FileResult(filepath=filepath)
 
-        if self.backup_handler and not (self.config.dry_run or self.config.check_only):
-            result.backup_path = self.backup_handler.create_backup(filepath)
+        if self.backup_handler:
+            check = getattr(self.config, "check_only", False)
+            dry   = getattr(self.config, "dry_run",    False)
+            if not check and not dry:
+                result.backup_path = self.backup_handler.create_backup(filepath)
 
-        class Args:
-            def __init__(self, config):
-                for key, value in config.to_dict().items():
-                    setattr(self, key, value)
-                if not hasattr(self, 'check_only'):
-                    setattr(self, 'check_only', getattr(config, 'check_only', False))
-
-        args = Args(self.config)
+        args = _config_to_namespace(self.config)
 
         try:
             changed = self.tabfix.process_file(filepath, args, None)
             result.changed = changed
 
             if self.formatter:
-                success, messages = self.formatter.process_file(
+                ok, msgs = self.formatter.process_file(
                     filepath,
-                    check_only=getattr(args, 'check_only', False) or getattr(args, 'dry_run', False)
+                    check_only=getattr(args, "check_only", False) or getattr(args, "dry_run", False),
                 )
-                if not success and messages:
-                    if getattr(args, 'check_only', False) or getattr(args, 'dry_run', False):
+                if not ok and msgs:
+                    if getattr(args, "check_only", False) or getattr(args, "dry_run", False):
                         result.needs_formatting = True
-                        result.changes.extend(messages)
+                        result.changes.extend(msgs)
                     else:
-                        success, fix_messages = self.formatter.process_file(filepath, check_only=False)
-                        if success:
+                        ok2, fix_msgs = self.formatter.process_file(filepath, check_only=False)
+                        if ok2:
                             result.changed = True
-                            result.changes.extend(fix_messages)
-
-            return result
+                            result.changes.extend(fix_msgs)
 
         except Exception as e:
             result.errors.append(str(e))
-            return result
 
-    def process_directory(self,
-                         directory: Path,
-                         recursive: bool = True,
-                         callback: Optional[Callable[[FileResult], None]] = None) -> BatchResult:
-        result = BatchResult()
-
-        if not directory.exists():
-            result.failed_files += 1
-            return result
-
-        pattern = "**/*" if recursive else "*"
-        files = list(directory.glob(pattern))
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_file = {
-                executor.submit(self.process_file, file): file
-                for file in files if file.is_file()
-            }
-
-            for future in as_completed(future_to_file):
-                try:
-                    file_result = future.result()
-                    result.add_result(file_result)
-                    if callback:
-                        callback(file_result)
-                except Exception as e:
-                    result.failed_files += 1
-
-        result.finish()
         return result
 
-    def process_git_changes(self, repo_path: Path, include_untracked: bool = False) -> BatchResult:
-        git = GitIntegrator(repo_path)
-        files = set(git.get_staged_files() + git.get_modified_files())
+    def process_directory(
+        self,
+        directory: Path,
+        recursive: bool = True,
+        callback:  Optional[Callable[[FileResult], None]] = None,
+    ) -> BatchResult:
+        batch = BatchResult()
+        if not directory.exists():
+            batch.failed_files += 1
+            return batch
 
+        pattern = "**/*" if recursive else "*"
+        files   = [f for f in directory.glob(pattern) if f.is_file()]
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as ex:
+            futures = {ex.submit(self.process_file, f): f for f in files}
+            for future in as_completed(futures):
+                try:
+                    res = future.result()
+                    batch.add_result(res)
+                    if callback:
+                        callback(res)
+                except Exception:
+                    batch.failed_files += 1
+
+        batch.finish()
+        return batch
+
+    def process_git_changes(
+        self,
+        repo_path:        Path,
+        include_untracked: bool = False,
+    ) -> BatchResult:
+        """
+        [BUG-A2] Was calling the module-level process_files() helper which
+        creates a new TabFixAPI and discards self's formatter/backup config.
+        Now uses self.process_file() directly.
+        """
+        git = GitIntegrator(repo_path)
+        files: set = set(git.get_staged_files()) | set(git.get_modified_files())
         if include_untracked:
             files.update(git.get_untracked_files())
 
-        return process_files(list(files), self.config)
+        batch = BatchResult()
+        for fp in files:
+            if fp.exists():
+                batch.add_result(self.process_file(fp))
+            else:
+                batch.failed_files += 1
+        batch.finish()
+        return batch
+
 
     def revert_last_backup(self, batch_result: BatchResult) -> Tuple[int, int]:
         if not self.backup_handler:
             return 0, 0
-
-        restored = 0
-        failed = 0
-
+        restored = failed = 0
         for res in batch_result.individual_results:
-            if res.backup_path and res.filepath.exists():
-                if self.backup_handler.restore_backup(Path(res.backup_path), res.filepath):
+            if res.backup_path:
+                bp = Path(res.backup_path) if isinstance(res.backup_path, str) else res.backup_path
+                if self.backup_handler.restore_backup(bp, res.filepath):
                     restored += 1
                 else:
                     failed += 1
-
         return restored, failed
 
-
 class AsyncTabFixAPI:
-    def __init__(self, config: Optional[TabFixConfig] = None):
+    def __init__(self, config: Optional[TabFixConfig] = None) -> None:
         self.sync_api = TabFixAPI(config)
 
     async def process_file_async(self, filepath: Path) -> FileResult:
@@ -287,130 +355,137 @@ class AsyncTabFixAPI:
 
     async def process_directory_async(
         self,
-        directory: Path,
-        recursive: bool = True,
-        on_progress: Optional[Callable[[FileResult], Awaitable[None]]] = None
+        directory:   Path,
+        recursive:   bool = True,
+        on_progress: Optional[Callable[[FileResult], Union[None, Awaitable[None]]]] = None,
     ) -> BatchResult:
-        result = BatchResult()
-
+        batch = BatchResult()
         if not directory.exists():
-            return result
+            return batch
 
         pattern = "**/*" if recursive else "*"
-        files = [f for f in directory.glob(pattern) if f.is_file()]
-
-        tasks = [self.process_file_async(f) for f in files]
+        files   = [f for f in directory.glob(pattern) if f.is_file()]
+        tasks   = [self.process_file_async(f) for f in files]
 
         for coro in asyncio.as_completed(tasks):
             try:
-                file_result = await coro
-                result.add_result(file_result)
+                res = await coro
+                batch.add_result(res)
                 if on_progress:
-                    if asyncio.iscoroutinefunction(on_progress):
-                        await on_progress(file_result)
-                    else:
-                        on_progress(file_result)
+                    r = on_progress(res)
+                    if asyncio.iscoroutine(r):
+                        await r
             except Exception:
-                result.failed_files += 1
+                batch.failed_files += 1
 
-        result.finish()
-        return result
-
+        batch.finish()
+        return batch
 
 class DirectoryWatcher:
-    def __init__(self, api: TabFixAPI, directory: Path, interval: float = 1.0):
-        self.api = api
+    def __init__(self, api: TabFixAPI, directory: Path, interval: float = 1.0) -> None:
+        self.api       = api
         self.directory = directory
-        self.interval = interval
-        self.running = False
-        self._mtimes = {}
+        self.interval  = interval
+        self.running   = False
+        self._mtimes:  Dict[Path, float] = {}
 
-    def start(self, callback: Callable[[FileResult], None]):
+    def start(self, callback: Callable[[FileResult], None]) -> None:
         self.running = True
         self._scan_initial()
-
+        import time as _time
         while self.running:
-            changes = self._detect_changes()
-            for filepath in changes:
-                result = self.api.process_file(filepath)
-                if result.changed or result.errors:
-                    callback(result)
-            time.sleep(self.interval)
+            for fp in self._detect_changes():
+                res = self.api.process_file(fp)
+                if res.changed or res.errors:
+                    callback(res)
+            _time.sleep(self.interval)
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
 
-    def _scan_initial(self):
-        for f in self.directory.rglob("*"):
-            if f.is_file():
-                self._mtimes[f] = f.stat().st_mtime
+    def _scan_initial(self) -> None:
+        try:
+            for f in self.directory.rglob("*"):
+                if f.is_file():
+                    self._mtimes[f] = f.stat().st_mtime
+        except OSError:
+            pass
 
     def _detect_changes(self) -> List[Path]:
-        changed = []
-        current_files = set()
-
-        for f in self.directory.rglob("*"):
-            if f.is_file():
-                current_files.add(f)
-                mtime = f.stat().st_mtime
-                if f not in self._mtimes or self._mtimes[f] != mtime:
-                    self._mtimes[f] = mtime
-                    changed.append(f)
-
-        deleted = set(self._mtimes.keys()) - current_files
-        for f in deleted:
+        changed: List[Path] = []
+        current: set = set()
+        try:
+            for f in self.directory.rglob("*"):
+                if not f.is_file():
+                    continue
+                current.add(f)
+                try:
+                    mtime = f.stat().st_mtime
+                    if f not in self._mtimes or self._mtimes[f] != mtime:
+                        self._mtimes[f] = mtime
+                        changed.append(f)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        for f in set(self._mtimes) - current:
             del self._mtimes[f]
-
         return changed
-
 
 def create_api(config: Optional[TabFixConfig] = None) -> TabFixAPI:
     return TabFixAPI(config)
 
+
 def create_async_api(config: Optional[TabFixConfig] = None) -> AsyncTabFixAPI:
     return AsyncTabFixAPI(config)
 
-def process_files(files: List[Union[str, Path]], config: Optional[TabFixConfig] = None) -> BatchResult:
-    api = TabFixAPI(config)
-    result = BatchResult()
 
-    for file_str in files:
-        filepath = Path(file_str) if isinstance(file_str, str) else file_str
-        if filepath.exists():
-            result.add_result(api.process_file(filepath))
+def process_files(
+    files:  List[Union[str, Path]],
+    config: Optional[TabFixConfig] = None,
+) -> BatchResult:
+    api   = TabFixAPI(config)
+    batch = BatchResult()
+    for f in files:
+        fp = Path(f) if isinstance(f, str) else f
+        if fp.exists():
+            batch.add_result(api.process_file(fp))
         else:
-            result.failed_files += 1
+            batch.failed_files += 1
+    batch.finish()
+    return batch
 
-    result.finish()
-    return result
 
 def validate_config_file(filepath: Path) -> Tuple[bool, List[str]]:
-    errors = []
+    errors: List[str] = []
     try:
-        with open(filepath, 'r') as f:
-            config_data = json.load(f)
-        valid_fields = {f.name for f in TabFixConfig.__dataclass_fields__.values()}
-        for key in config_data:
-            if key not in valid_fields:
-                errors.append(f"Unknown field: {key}")
-        return len(errors) == 0, errors
+        with open(filepath, encoding="utf-8") as fh:
+            data = json.load(fh)
+        # [BUG-A3] Simpler field lookup
+        valid = set(TabFixConfig.__dataclass_fields__.keys())
+        for key in data:
+            if key not in valid:
+                errors.append(f"Unknown field: {key!r}")
+        return not errors, errors
     except Exception as e:
         return False, [str(e)]
 
-def create_project_config(root_dir: Path, project_type: Optional[str] = None, **overrides) -> TabFixConfig:
-    config = TabFixConfig()
-    defaults = {
-        'python': {'spaces': 4, 'fix_mixed': True, 'format_json': True, 'smart_processing': True},
-        'javascript': {'spaces': 2, 'fix_mixed': True, 'format_json': True, 'smart_processing': True},
-        'go': {'spaces': 4, 'fix_mixed': False, 'smart_processing': True}
-    }
 
+def create_project_config(
+    root_dir:     Path,
+    project_type: Optional[str] = None,
+    **overrides:  Any,
+) -> TabFixConfig:
+    config = TabFixConfig()
+    defaults: Dict[str, Dict[str, Any]] = {
+        "python":     {"spaces": 4, "fix_mixed": True,  "format_json": True,  "smart_processing": True},
+        "javascript": {"spaces": 2, "fix_mixed": True,  "format_json": True,  "smart_processing": True},
+        "go":         {"spaces": 4, "fix_mixed": False,                        "smart_processing": True},
+    }
     if project_type in defaults:
         for k, v in defaults[project_type].items():
             setattr(config, k, v)
-
-    for key, value in overrides.items():
-        if hasattr(config, key):
-            setattr(config, key, value)
-
+    for k, v in overrides.items():
+        if hasattr(config, k):
+            setattr(config, k, v)
     return config
