@@ -1,12 +1,27 @@
 #!/usr/bin/env python3
+"""
+tabfix.__main__ — CLI entry point.
+
+Fixes:
+  [BUG-M1] --no-color: previously only shadowed Colors in this module's
+            namespace.  Now calls core.disable_colors() so the flag
+            actually works across all modules.
+  [BUG-M2] --autoformat and --check-format conflict check was missing from
+            the refactored flow (kept from original but verified it works).
+
+New features:
+  [NEW-M1] --normalize-endings  (CRLF → LF)
+  [NEW-M2] --check-only         (CI mode: exit 1 if any file needs changes)
+  [NEW-M3] --json-report PATH   (machine-readable stats)
+"""
+
 import sys
 import argparse
 from pathlib import Path
 
-from .core import TabFix, Colors, print_color, GitignoreMatcher
+from .core import TabFix, Colors, print_color, GitignoreMatcher, disable_colors
 from .config import TabFixConfig, ConfigLoader, init_project
 from .autoformat import get_available_formatters, create_autoformat_config, Formatter, FileProcessor
-
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -14,258 +29,137 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  tabfix --init                    # Create .tabfixrc config file
-  tabfix --init-autoformat         # Create autoformat config
-  tabfix --autoformat              # Autoformat files using external tools
-  tabfix --check-format            # Check formatting without changes
-  tabfix --list-formatters         # List available formatters
-  tabfix --recursive --remove-bom  # Process recursively, remove BOM
-  tabfix --git-staged --interactive # Interactive mode on staged files
-  tabfix --diff file1.py file2.py  # Compare indentation
+  tabfix --init                          # Create .tabfixrc config file
+  tabfix --init-autoformat               # Create autoformat config
+  tabfix --autoformat                    # Autoformat with external tools
+  tabfix --check-format                  # Check formatting (no changes)
+  tabfix --list-formatters               # Show available formatters
+  tabfix -r --fix-mixed --fix-trailing . # Fix indentation recursively
+  tabfix --git-staged --interactive      # Interactive mode on staged files
+  tabfix --diff file1.py file2.py        # Compare indentation
+  tabfix --check-only -r src/            # CI: exit 1 if any file needs changes
+  tabfix --normalize-endings -r .        # Convert CRLF to LF
+  tabfix --json-report stats.json -r .   # Save stats to JSON
 """,
     )
 
     parser.add_argument(
-        "paths",
-        nargs="*",
-        default=["."],
-        help="Files or directories to process"
+        "paths", nargs="*", default=["."],
+        help="Files or directories to process",
     )
+    parser.add_argument("-s", "--spaces",    type=int, default=4,
+                        help="Spaces per tab (default: 4)")
+    parser.add_argument("-r", "--recursive", action="store_true",
+                        help="Process directories recursively")
 
-    parser.add_argument(
-        "-s", "--spaces",
-        type=int,
-        default=4,
-        help="Number of spaces per tab (default: 4)"
-    )
-    parser.add_argument(
-        "-r", "--recursive",
-        action="store_true",
-        help="Process directories recursively"
-    )
+    git = parser.add_argument_group("Git integration")
+    git.add_argument("--git-staged",      action="store_true", help="Process staged files only")
+    git.add_argument("--git-unstaged",    action="store_true", help="Process unstaged files only")
+    git.add_argument("--git-all-changed", action="store_true", help="Process all changed files")
+    git.add_argument("--no-gitignore",    action="store_true", help="Ignore .gitignore patterns")
 
-    git_group = parser.add_argument_group("Git integration")
-    git_group.add_argument(
-        "--git-staged",
-        action="store_true",
-        help="Process only staged files in git"
-    )
-    git_group.add_argument(
-        "--git-unstaged",
-        action="store_true",
-        help="Process only unstaged files in git"
-    )
-    git_group.add_argument(
-        "--git-all-changed",
-        action="store_true",
-        help="Process all changed files in git"
-    )
-    git_group.add_argument(
-        "--no-gitignore",
-        action="store_true",
-        help="Do not use .gitignore patterns"
-    )
+    af = parser.add_argument_group("Autoformatting")
+    af.add_argument("--autoformat",      "-a", action="store_true",
+                    help="Autoformat files using external formatters")
+    af.add_argument("--check-format",          action="store_true",
+                    help="Check formatting without making changes")
+    af.add_argument("--list-formatters",       action="store_true",
+                    help="List available formatters and exit")
+    af.add_argument("--formatters",
+                    help="Comma-separated list of formatters to use (e.g. black,isort)")
+    af.add_argument("--init-autoformat",       action="store_true",
+                    help="Create autoformat config file")
 
-    autoformat_group = parser.add_argument_group("Autoformatting")
-    autoformat_group.add_argument(
-        "--autoformat",
-        "-a",
-        action="store_true",
-        help="Autoformat files using external formatters"
-    )
-    autoformat_group.add_argument(
-        "--check-format",
-        action="store_true",
-        help="Check formatting without making changes"
-    )
-    autoformat_group.add_argument(
-        "--list-formatters",
-        action="store_true",
-        help="List available formatters and exit"
-    )
-    autoformat_group.add_argument(
-        "--formatters",
-        help="Comma-separated list of formatters to use (e.g. black,isort)"
-    )
-    autoformat_group.add_argument(
-        "--init-autoformat",
-        action="store_true",
-        help="Initialize autoformat configuration file"
-    )
+    enc = parser.add_argument_group("Encoding and binary file handling")
+    enc.add_argument("--skip-binary",      action="store_true", default=True,
+                     help="Skip binary files (default: True)")
+    enc.add_argument("--no-skip-binary",   action="store_false", dest="skip_binary",
+                     help="Process even binary-looking files")
+    enc.add_argument("--force-encoding",   help="Force a specific encoding")
+    enc.add_argument("--fallback-encoding", default="latin-1",
+                     help="Fallback encoding (default: latin-1)")
+    enc.add_argument("--warn-encoding",    action="store_true",
+                     help="Warn when encoding detection is uncertain")
+    enc.add_argument("--max-file-size",    type=int, default=10 * 1024 * 1024,
+                     help="Maximum file size to process in bytes (default: 10 MB)")
 
-    encoding_group = parser.add_argument_group("Encoding and binary file handling")
-    encoding_group.add_argument(
-        "--skip-binary",
-        action="store_true",
-        default=True,
-        help="Skip files that appear to be binary (default: True)"
-    )
-    encoding_group.add_argument(
-        "--no-skip-binary",
-        action="store_false",
-        dest="skip_binary",
-        help="Process files even if they appear to be binary"
-    )
-    encoding_group.add_argument(
-        "--force-encoding",
-        help="Force specific encoding (skip auto-detection)"
-    )
-    encoding_group.add_argument(
-        "--fallback-encoding",
-        default="latin-1",
-        help="Fallback encoding when detection fails (default: latin-1)"
-    )
-    encoding_group.add_argument(
-        "--warn-encoding",
-        action="store_true",
-        help="Warn when encoding detection is uncertain"
-    )
-    encoding_group.add_argument(
-        "--max-file-size",
-        type=int,
-        default=10 * 1024 * 1024,
-        help="Maximum file size to process in bytes (default: 10MB)"
-    )
+    ft = parser.add_argument_group("File type specific processing")
+    ft.add_argument("--smart-processing",    action="store_true", default=True,
+                    help="Smart per-extension processing (default: True)")
+    ft.add_argument("--no-smart-processing", action="store_false", dest="smart_processing",
+                    help="Disable smart per-extension processing")
+    ft.add_argument("--preserve-quotes",     action="store_true",
+                    help="Preserve original string quotes in code files")
 
-    filetype_group = parser.add_argument_group("File type specific processing")
-    filetype_group.add_argument(
-        "--smart-processing",
-        action="store_true",
-        default=True,
-        help="Enable smart processing for different file types (default: True)"
-    )
-    filetype_group.add_argument(
-        "--no-smart-processing",
-        action="store_false",
-        dest="smart_processing",
-        help="Disable smart processing for different file types"
-    )
-    filetype_group.add_argument(
-        "--preserve-quotes",
-        action="store_true",
-        help="Preserve original string quotes in code files"
-    )
+    fmt = parser.add_argument_group("Formatting options")
+    fmt.add_argument("-m", "--fix-mixed",         action="store_true",
+                     help="Fix mixed tabs/spaces indentation")
+    fmt.add_argument("-t", "--fix-trailing",       action="store_true",
+                     help="Remove trailing whitespace")
+    fmt.add_argument("-f", "--final-newline",      action="store_true",
+                     help="Ensure file ends with a newline")
+    fmt.add_argument("--remove-bom",               action="store_true",
+                     help="Remove UTF-8 BOM marker")
+    fmt.add_argument("--keep-bom",                 action="store_true",
+                     help="Preserve existing BOM marker")
+    fmt.add_argument("--format-json",              action="store_true",
+                     help="Format JSON files with proper indentation")
+    fmt.add_argument("--normalize-endings",        action="store_true",   # [NEW-M1]
+                     help="Convert CRLF (\\r\\n) and stray CR (\\r) to LF (\\n)")
 
-    formatting_group = parser.add_argument_group("Formatting options")
-    formatting_group.add_argument(
-        "-m", "--fix-mixed",
-        action="store_true",
-        help="Fix mixed tabs/spaces indentation"
-    )
-    formatting_group.add_argument(
-        "-t", "--fix-trailing",
-        action="store_true",
-        help="Remove trailing whitespace"
-    )
-    formatting_group.add_argument(
-        "-f", "--final-newline",
-        action="store_true",
-        help="Ensure file ends with newline"
-    )
-    formatting_group.add_argument(
-        "--remove-bom",
-        action="store_true",
-        help="Remove UTF-8 BOM marker"
-    )
-    formatting_group.add_argument(
-        "--keep-bom",
-        action="store_true",
-        help="Preserve existing BOM marker"
-    )
-    formatting_group.add_argument(
-        "--format-json",
-        action="store_true",
-        help="Format JSON files with proper indentation"
-    )
+    mode = parser.add_argument_group("Operation mode")
+    mode.add_argument("-i", "--interactive", action="store_true",
+                      help="Interactive mode (confirm each change)")
+    mode.add_argument("--progress",          action="store_true",
+                      help="Show progress bar during processing")
+    mode.add_argument("--dry-run",           action="store_true",
+                      help="Show changes without modifying files")
+    mode.add_argument("--check-only",        action="store_true",  # [NEW-M2]
+                      help="Like --dry-run but exits with code 1 if any file needs changes (CI)")
+    mode.add_argument("--backup",            action="store_true",
+                      help="Create .bak backup before modifying")
+    mode.add_argument("--diff", nargs=2, metavar=("FILE1", "FILE2"),
+                      help="Compare indentation between two files")
 
-    mode_group = parser.add_argument_group("Operation mode")
-    mode_group.add_argument(
-        "-i", "--interactive",
-        action="store_true",
-        help="Interactive mode (confirm each change)"
-    )
-    mode_group.add_argument(
-        "--progress",
-        action="store_true",
-        help="Show progress bar during processing"
-    )
-    mode_group.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show changes without modifying files"
-    )
-    mode_group.add_argument(
-        "--backup",
-        action="store_true",
-        help="Create backup files (.bak)"
-    )
-    mode_group.add_argument(
-        "--diff",
-        nargs=2,
-        metavar=("FILE1", "FILE2"),
-        help="Compare indentation between two files"
-    )
+    out = parser.add_argument_group("Output control")
+    out.add_argument("-v", "--verbose",    action="store_true", help="Verbose output")
+    out.add_argument("-q", "--quiet",      action="store_true", help="Minimal output")
+    out.add_argument("--no-color",         action="store_true", help="Disable colored output")
+    out.add_argument("--json-report",      metavar="PATH",      # [NEW-M3]
+                     help="Write machine-readable stats to a JSON file")
 
-    output_group = parser.add_argument_group("Output control")
-    output_group.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Verbose output"
-    )
-    output_group.add_argument(
-        "-q", "--quiet",
-        action="store_true",
-        help="Quiet mode (minimal output)"
-    )
-    output_group.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored output"
-    )
-
-    parser.add_argument(
-        "--init",
-        action="store_true",
-        help="Initialize configuration file (.tabfixrc)"
-    )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        help="Path to configuration file"
-    )
-    parser.add_argument(
-        "--no-config",
-        action="store_true",
-        help="Ignore configuration files"
-    )
+    parser.add_argument("--init",      action="store_true",
+                        help="Create .tabfixrc config file in current directory")
+    parser.add_argument("--config",    type=Path,
+                        help="Path to configuration file")
+    parser.add_argument("--no-config", action="store_true",
+                        help="Ignore all configuration files")
 
     return parser
 
-
-def main():
+def main() -> None:
     parser = create_parser()
-    args = parser.parse_args()
+    args   = parser.parse_args()
 
+    # [BUG-M1] Use the module-level disable_colors() so it applies everywhere
     if args.no_color:
-        global Colors
-        Colors = type("Colors", (), {k: "" for k in dir(Colors) if not k.startswith("_")})()
+        disable_colors()
 
     if args.init:
-        success = init_project(Path.cwd())
-        sys.exit(0 if success else 1)
+        sys.exit(0 if init_project(Path.cwd()) else 1)
 
     if args.init_autoformat:
-        config_path = create_autoformat_config()
-        print_color(f"Created autoformat config: {config_path}", Colors.GREEN)
+        path = create_autoformat_config()
+        print_color(f"Created autoformat config: {path}", Colors.GREEN)
         sys.exit(0)
 
     if args.list_formatters:
-        formatters = get_available_formatters()
+        fmts = get_available_formatters()
         print_color("Available formatters:", Colors.BOLD)
-        for formatter in formatters:
-            print_color(f"  ✓ {formatter}", Colors.GREEN)
-        if not formatters:
-            print_color("  No formatters found. Install tools like black, prettier, etc.", Colors.YELLOW)
+        for f in fmts:
+            print_color(f"  ✓ {f}", Colors.GREEN)
+        if not fmts:
+            print_color("  None found. Install black, prettier, gofmt, etc.", Colors.YELLOW)
         sys.exit(0)
 
     if args.remove_bom and args.keep_bom:
@@ -276,15 +170,18 @@ def main():
         print_color("Cannot use both --autoformat and --check-format", Colors.RED)
         sys.exit(1)
 
-    fixer = TabFix(spaces_per_tab=args.spaces)
+    if args.dry_run and args.check_only:
+        print_color("--dry-run and --check-only are redundant; using --check-only", Colors.YELLOW)
+        args.dry_run = False
+
+    fixer          = TabFix(spaces_per_tab=args.spaces)
     file_processor = None
 
     if args.autoformat or args.check_format:
         file_processor = FileProcessor(spaces_per_tab=args.spaces)
         if args.formatters:
             try:
-                formatter_list = [Formatter(f.strip()) for f in args.formatters.split(',')]
-                args.formatter_list = formatter_list
+                args.formatter_list = [Formatter(f.strip()) for f in args.formatters.split(",")]
             except ValueError as e:
                 print_color(f"Invalid formatter: {e}", Colors.RED)
                 sys.exit(1)
@@ -292,41 +189,28 @@ def main():
             args.formatter_list = None
 
     if args.diff:
-        file1 = Path(args.diff[0])
-        file2 = Path(args.diff[1])
-        fixer.compare_files(file1, file2, args)
+        fixer.compare_files(Path(args.diff[0]), Path(args.diff[1]), args)
         return
 
     files_to_process = []
 
     if args.git_staged or args.git_unstaged or args.git_all_changed:
-        if args.git_staged:
-            files = fixer.get_git_files("staged")
-        elif args.git_unstaged:
-            files = fixer.get_git_files("unstaged")
-        else:
-            files = fixer.get_git_files("all_changed")
-        files_to_process.extend(files)
+        mode = ("staged"      if args.git_staged
+                else "unstaged" if args.git_unstaged
+                else "all_changed")
+        files_to_process = fixer.get_git_files(mode)
     else:
         for path_str in args.paths:
             path = Path(path_str)
-
             if not path.exists():
                 if not args.quiet:
-                    print_color(f"Warning: Path not found: {path}", Colors.YELLOW)
+                    print_color(f"Warning: path not found: {path}", Colors.YELLOW)
                 continue
-
             if path.is_file():
                 files_to_process.append(path)
             elif path.is_dir():
-                if args.recursive:
-                    pattern = "**/*"
-                else:
-                    pattern = "*"
-
-                for filepath in path.glob(pattern):
-                    if filepath.is_file():
-                        files_to_process.append(filepath)
+                pattern = "**/*" if args.recursive else "*"
+                files_to_process.extend(p for p in path.glob(pattern) if p.is_file())
 
     if not files_to_process:
         if not args.quiet:
@@ -334,80 +218,74 @@ def main():
         return
 
     gitignore_matcher = None
-    if not args.no_gitignore and files_to_process:
-        root_dir = Path.cwd()
-        for filepath in files_to_process:
-            if filepath.is_absolute():
-                potential_root = filepath.parent
-            else:
-                potential_root = (Path.cwd() / filepath).parent
-
-            gitignore_path = potential_root / ".gitignore"
-            if gitignore_path.exists():
-                root_dir = potential_root
+    if not args.no_gitignore:
+        root = Path.cwd()
+        for fp in files_to_process:
+            cand = (fp if fp.is_absolute() else Path.cwd() / fp).parent
+            if (cand / ".gitignore").exists():
+                root = cand
                 break
-
-        gitignore_matcher = GitignoreMatcher(root_dir)
+        gitignore_matcher = GitignoreMatcher(root)
         if args.verbose:
-            print_color(f"Using .gitignore from: {root_dir}", Colors.CYAN)
+            print_color(f"Using .gitignore from: {root}", Colors.CYAN)
 
-    processed_files = []
-    for filepath in files_to_process:
-        if gitignore_matcher and gitignore_matcher.should_ignore(filepath):
-            continue
-        processed_files.append(filepath)
+    processed = [
+        fp for fp in files_to_process
+        if not gitignore_matcher or not gitignore_matcher.should_ignore(fp)
+    ]
 
     if args.verbose and gitignore_matcher:
-        skipped = len(files_to_process) - len(processed_files)
-        if skipped > 0:
-            print_color(f"Skipping {skipped} files due to .gitignore", Colors.DIM)
+        skipped = len(files_to_process) - len(processed)
+        if skipped:
+            print_color(f"Skipping {skipped} file(s) due to .gitignore", Colors.DIM)
 
-    if not processed_files:
+    if not processed:
         if not args.quiet:
-            print_color("No files to process after applying .gitignore", Colors.YELLOW)
+            print_color("No files to process after .gitignore filter", Colors.YELLOW)
         return
 
     try:
-        from tqdm import tqdm
-        if args.progress and not args.interactive:
-            iterator = tqdm(processed_files, desc="Processing", unit="file", disable=args.quiet)
-        else:
-            iterator = processed_files
+        from tqdm import tqdm as _tqdm
+        iterator = (
+            _tqdm(processed, desc="Processing", unit="file", disable=args.quiet)
+            if args.progress and not args.interactive
+            else processed
+        )
     except ImportError:
-        iterator = processed_files
+        iterator = processed
 
-    autoformat_stats = {"formatted": 0, "failed": 0, "checked": 0}
+    af_stats = {"formatted": 0, "failed": 0, "checked": 0}
 
     for filepath in iterator:
-        file_changed = fixer.process_file(filepath, args, gitignore_matcher)
+        fixer.process_file(filepath, args, gitignore_matcher)
 
         if file_processor and (args.autoformat or args.check_format):
             if args.verbose:
-                mode = "Checking" if args.check_format else "Formatting"
-                print_color(f"{mode} {filepath}", Colors.CYAN)
+                verb = "Checking" if args.check_format else "Formatting"
+                print_color(f"  {verb}: {filepath}", Colors.CYAN)
 
-            success, messages = file_processor.process_file(
+            ok, msgs = file_processor.process_file(
                 filepath,
                 formatters=args.formatter_list,
-                check_only=args.check_format
+                check_only=args.check_format,
             )
 
             if args.check_format:
-                autoformat_stats["checked"] += 1
-                if not success and args.verbose:
-                    for msg in messages:
-                        print_color(f"  ✗ {msg}", Colors.RED)
-            elif args.autoformat:
-                if success:
-                    autoformat_stats["formatted"] += 1
+                af_stats["checked"] += 1
+                if not ok and args.verbose:
+                    for m in msgs:
+                        print_color(f"    ✗ {m}", Colors.RED)
+            else:
+                if ok:
+                    af_stats["formatted"] += 1
                     if args.verbose:
-                        for msg in messages:
-                            print_color(f"  ✓ {msg}", Colors.GREEN)
+                        for m in msgs:
+                            print_color(f"    ✓ {m}", Colors.GREEN)
                 else:
-                    autoformat_stats["failed"] += 1
+                    af_stats["failed"] += 1
                     if args.verbose:
-                        for msg in messages:
-                            print_color(f"  ✗ {msg}", Colors.RED)
+                        for m in msgs:
+                            print_color(f"    ✗ {m}", Colors.RED)
 
     fixer.print_stats(args)
 
@@ -415,13 +293,16 @@ def main():
         print_color(f"\n{'='*60}", Colors.CYAN)
         print_color("AUTOFORMAT STATISTICS", Colors.BOLD + Colors.CYAN)
         print_color(f"{'='*60}", Colors.CYAN)
-
         if args.check_format:
-            print_color(f"Files checked: {autoformat_stats['checked']}", Colors.BLUE)
+            print_color(f"Files checked:    {af_stats['checked']}", Colors.BLUE)
         else:
-            print_color(f"Files formatted: {autoformat_stats['formatted']}", Colors.GREEN)
-            if autoformat_stats['failed'] > 0:
-                print_color(f"Files failed: {autoformat_stats['failed']}", Colors.RED)
+            print_color(f"Files formatted:  {af_stats['formatted']}", Colors.GREEN)
+            if af_stats["failed"]:
+                print_color(f"Files failed:     {af_stats['failed']}", Colors.RED)
+
+    # [NEW-M2] Exit 1 in check-only mode when any file would change
+    if args.check_only and fixer.stats["files_would_change"] > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
