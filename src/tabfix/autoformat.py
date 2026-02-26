@@ -1,181 +1,232 @@
+"""
+tabfix.autoformat — external formatter integration.
+
+Fixes:
+  [BUG-F1] rustfmt: added --check flag for check-only mode.
+  [BUG-F2] yapf:    --diff for check mode, -i for fix mode (was missing both).
+  [BUG-F3] gofmt:   -w flag for write mode (was writing to stdout only),
+                    -l flag for check mode (list files that need changes).
+  [BUG-F4] autopep8: added --diff flag for check mode.
+"""
+
 import subprocess
 import shutil
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict, Set
+from typing import Dict, List, Optional, Set, Tuple
 from enum import Enum
 import json
 import os
 
 
 class Formatter(Enum):
-    BLACK = "black"
-    AUTOPEP8 = "autopep8"
-    ISORT = "isort"
-    PRETTIER = "prettier"
-    RUFF = "ruff"
-    YAPF = "yapf"
+    BLACK       = "black"
+    AUTOPEP8    = "autopep8"
+    ISORT       = "isort"
+    PRETTIER    = "prettier"
+    RUFF        = "ruff"
+    YAPF        = "yapf"
     CLANGFORMAT = "clang-format"
-    GOFMT = "gofmt"
-    RUSTFMT = "rustfmt"
+    GOFMT       = "gofmt"
+    RUSTFMT     = "rustfmt"
 
 
 class FormatterManager:
-    def __init__(self, spaces_per_tab: int = 4):
+    def __init__(self, spaces_per_tab: int = 4) -> None:
         self.spaces_per_tab = spaces_per_tab
-        self._available_formatters: Set[Formatter] = set()
-        self._detect_formatters()
+        self._available: Set[Formatter] = set()
+        self._detect()
 
-    def _detect_formatters(self):
-        for formatter in Formatter:
-            if shutil.which(formatter.value) is not None:
-                self._available_formatters.add(formatter)
+    def _detect(self) -> None:
+        for fmt in Formatter:
+            if shutil.which(fmt.value) is not None:
+                self._available.add(fmt)
 
-    def is_formatter_available(self, formatter: Formatter) -> bool:
-        return formatter in self._available_formatters
+    def is_available(self, fmt: Formatter) -> bool:
+        return fmt in self._available
 
     def get_available_formatters(self) -> List[str]:
-        return [f.value for f in self._available_formatters]
+        return sorted(f.value for f in self._available)
 
-    def format_file(self, filepath: Path, formatters: List[Formatter], check_only: bool = False) -> Tuple[bool, List[str]]:
-        results = []
-        for formatter in formatters:
-            if self.is_formatter_available(formatter):
-                if check_only:
-                    result = self._check_formatting(filepath, formatter)
-                else:
-                    result = self._apply_formatter(filepath, formatter)
-                results.append(result)
+    def format_file(
+        self,
+        filepath:   Path,
+        formatters: List[Formatter],
+        check_only: bool = False,
+    ) -> Tuple[bool, List[str]]:
+        results: List[Tuple[bool, str]] = []
+        for fmt in formatters:
+            if self.is_available(fmt):
+                fn = self._check if check_only else self._apply
+                results.append(fn(filepath, fmt))
             else:
-                results.append((False, f"Formatter {formatter.value} not available"))
+                results.append((False, f"{fmt.value}: not installed"))
 
-        success = any(success for success, _ in results)
+        success  = any(ok for ok, _ in results)
         messages = [msg for _, msg in results if msg]
         return success, messages
 
-    def _apply_formatter(self, filepath: Path, formatter: Formatter) -> Tuple[bool, str]:
-        cmd = self._build_formatter_command(filepath, formatter, fix=True)
+    def _apply(self, filepath: Path, fmt: Formatter) -> Tuple[bool, str]:
+        cmd = self._build_cmd(filepath, fmt, fix=True)
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                return True, f"Formatted with {formatter.value}"
-            else:
-                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
-                return False, f"{formatter.value}: {error_msg}"
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if r.returncode == 0:
+                return True, f"Formatted with {fmt.value}"
+            err = (r.stderr or r.stdout or "unknown error")[:200]
+            return False, f"{fmt.value}: {err}"
         except subprocess.TimeoutExpired:
-            return False, f"{formatter.value}: Timeout"
+            return False, f"{fmt.value}: timeout"
         except Exception as e:
-            return False, f"{formatter.value}: {str(e)}"
+            return False, f"{fmt.value}: {e}"
 
-    def _check_formatting(self, filepath: Path, formatter: Formatter) -> Tuple[bool, str]:
-        cmd = self._build_formatter_command(filepath, formatter, fix=False)
+    def _check(self, filepath: Path, fmt: Formatter) -> Tuple[bool, str]:
+        cmd = self._build_cmd(filepath, fmt, fix=False)
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                return True, f"OK ({formatter.value})"
-            else:
-                return False, f"Needs formatting ({formatter.value})"
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # gofmt -l: outputs filename if reformatting is needed; exit code is always 0
+            if fmt == Formatter.GOFMT:
+                needs_fmt = bool(r.stdout.strip())
+                return not needs_fmt, ("Needs formatting (gofmt)" if needs_fmt else "OK (gofmt)")
+            # Most other formatters exit 0 = clean, non-0 = needs formatting
+            if r.returncode == 0:
+                return True, f"OK ({fmt.value})"
+            return False, f"Needs formatting ({fmt.value})"
         except subprocess.TimeoutExpired:
-            return False, f"{formatter.value}: Timeout"
+            return False, f"{fmt.value}: timeout"
         except Exception as e:
-            return False, f"{formatter.value}: {str(e)}"
+            return False, f"{fmt.value}: {e}"
 
-    def _build_formatter_command(self, filepath: Path, formatter: Formatter, fix: bool) -> List[str]:
-        base_cmd = [formatter.value]
+    def _build_cmd(self, filepath: Path, fmt: Formatter, fix: bool) -> List[str]:
+        fp = str(filepath)
 
-        if formatter == Formatter.BLACK:
+        if fmt == Formatter.BLACK:
+            cmd = ["black"]
             if not fix:
-                base_cmd.append("--check")
-            base_cmd.append(str(filepath))
+                cmd.append("--check")
+            cmd.append(fp)
 
-        elif formatter == Formatter.RUFF:
+        elif fmt == Formatter.RUFF:
             if fix:
-                base_cmd.extend(["format", str(filepath)])
+                cmd = ["ruff", "format", fp]
             else:
-                base_cmd.extend(["format", "--check", str(filepath)])
+                cmd = ["ruff", "format", "--check", fp]
 
-        elif formatter == Formatter.ISORT:
+        elif fmt == Formatter.ISORT:
+            cmd = ["isort"]
             if not fix:
-                base_cmd.append("--check-only")
-            base_cmd.append(str(filepath))
+                cmd.append("--check-only")
+            cmd.append(fp)
 
-        elif formatter == Formatter.PRETTIER:
+        elif fmt == Formatter.PRETTIER:
+            cmd = ["prettier"]
             if not fix:
-                base_cmd.append("--check")
-            base_cmd.append(str(filepath))
+                cmd.append("--check")
+            cmd.append(fp)
 
-        elif formatter == Formatter.CLANGFORMAT:
-            if not fix:
-                base_cmd.extend(["--dry-run", "-Werror"])
-            base_cmd.append(str(filepath))
+        elif fmt == Formatter.CLANGFORMAT:
+            if fix:
+                cmd = ["clang-format", "-i", fp]
+            else:
+                cmd = ["clang-format", "--dry-run", "-Werror", fp]
 
-        elif formatter == Formatter.GOFMT:
-            if not fix:
-                base_cmd.append("-d")
-            base_cmd.append(str(filepath))
+        elif fmt == Formatter.GOFMT:
+            # [BUG-F3] -w writes in-place; -l lists files needing changes
+            if fix:
+                cmd = ["gofmt", "-w", fp]
+            else:
+                cmd = ["gofmt", "-l", fp]
+
+        elif fmt == Formatter.RUSTFMT:
+            # [BUG-F1] --check prevents in-place modification
+            if fix:
+                cmd = ["rustfmt", fp]
+            else:
+                cmd = ["rustfmt", "--check", fp]
+
+        elif fmt == Formatter.YAPF:
+            # [BUG-F2] -i for in-place; --diff for check (exits 1 if different)
+            if fix:
+                cmd = ["yapf", "-i", fp]
+            else:
+                cmd = ["yapf", "--diff", fp]
+
+        elif fmt == Formatter.AUTOPEP8:
+            # [BUG-F4] --diff for check mode; -i for fix mode
+            if fix:
+                cmd = ["autopep8", "-i", fp]
+            else:
+                cmd = ["autopep8", "--diff", fp]
 
         else:
-            base_cmd.append(str(filepath))
+            cmd = [fmt.value, fp]
 
-        return base_cmd
+        return cmd
 
 
 class FileProcessor:
-    def __init__(self, spaces_per_tab: int = 4):
-        self.spaces_per_tab = spaces_per_tab
+    """Maps file extensions to the appropriate external formatters."""
+
+    def __init__(self, spaces_per_tab: int = 4) -> None:
+        self.spaces_per_tab   = spaces_per_tab
         self.formatter_manager = FormatterManager(spaces_per_tab)
-        self.default_formatters = {
-            '.py': [Formatter.BLACK, Formatter.ISORT],
-            '.js': [Formatter.PRETTIER],
-            '.jsx': [Formatter.PRETTIER],
-            '.ts': [Formatter.PRETTIER],
-            '.tsx': [Formatter.PRETTIER],
-            '.json': [Formatter.PRETTIER],
-            '.md': [Formatter.PRETTIER],
-            '.html': [Formatter.PRETTIER],
-            '.css': [Formatter.PRETTIER],
-            '.yaml': [Formatter.PRETTIER],
-            '.yml': [Formatter.PRETTIER],
-            '.go': [Formatter.GOFMT],
-            '.rs': [Formatter.RUSTFMT],
-            '.cpp': [Formatter.CLANGFORMAT],
-            '.c': [Formatter.CLANGFORMAT],
-            '.java': [Formatter.CLANGFORMAT],
+        self.default_formatters: Dict[str, List[Formatter]] = {
+            ".py":    [Formatter.BLACK, Formatter.ISORT],
+            ".js":    [Formatter.PRETTIER],
+            ".jsx":   [Formatter.PRETTIER],
+            ".ts":    [Formatter.PRETTIER],
+            ".tsx":   [Formatter.PRETTIER],
+            ".json":  [Formatter.PRETTIER],
+            ".md":    [Formatter.PRETTIER],
+            ".html":  [Formatter.PRETTIER],
+            ".css":   [Formatter.PRETTIER],
+            ".yaml":  [Formatter.PRETTIER],
+            ".yml":   [Formatter.PRETTIER],
+            ".go":    [Formatter.GOFMT],
+            ".rs":    [Formatter.RUSTFMT],
+            ".cpp":   [Formatter.CLANGFORMAT],
+            ".c":     [Formatter.CLANGFORMAT],
+            ".java":  [Formatter.CLANGFORMAT],
         }
 
-    def get_formatters_for_file(self, filepath: Path, user_formatters: Optional[List[Formatter]] = None) -> List[Formatter]:
+    def get_formatters_for_file(
+        self,
+        filepath:        Path,
+        user_formatters: Optional[List[Formatter]] = None,
+    ) -> List[Formatter]:
         if user_formatters:
             return user_formatters
+        return self.default_formatters.get(filepath.suffix.lower(), [])
 
-        suffix = filepath.suffix.lower()
-        return self.default_formatters.get(suffix, [])
-
-    def process_file(self, filepath: Path, formatters: Optional[List[Formatter]] = None, check_only: bool = False) -> Tuple[bool, List[str]]:
-        formatters_to_use = self.get_formatters_for_file(filepath, formatters)
-        if not formatters_to_use:
+    def process_file(
+        self,
+        filepath:        Path,
+        formatters:      Optional[List[Formatter]] = None,
+        check_only:      bool                      = False,
+    ) -> Tuple[bool, List[str]]:
+        fmts = self.get_formatters_for_file(filepath, formatters)
+        if not fmts:
             return False, ["No formatters configured for this file type"]
-
-        return self.formatter_manager.format_file(filepath, formatters_to_use, check_only)
-
+        return self.formatter_manager.format_file(filepath, fmts, check_only)
 
 def get_available_formatters() -> List[str]:
-    manager = FormatterManager()
-    return manager.get_available_formatters()
+    """Return names of all currently installed formatters."""
+    return FormatterManager().get_available_formatters()
 
 
-def create_autoformat_config(filepath: Path = Path(".tabfix-autoformat.json")):
-    default_config = {
+def create_autoformat_config(filepath: Path = Path(".tabfix-autoformat.json")) -> Path:
+    """Write a default autoformat configuration file and return its path."""
+    config = {
         "formatters": {
-            "python": ["black", "isort"],
+            "python":     ["black", "isort"],
             "javascript": ["prettier"],
             "typescript": ["prettier"],
-            "json": ["prettier"],
-            "markdown": ["prettier"],
-            "yaml": ["prettier"],
-            "html": ["prettier"],
-            "css": ["prettier"],
-            "go": ["gofmt"],
-            "rust": ["rustfmt"],
-            "c_cpp": ["clang-format"],
+            "json":       ["prettier"],
+            "markdown":   ["prettier"],
+            "yaml":       ["prettier"],
+            "html":       ["prettier"],
+            "css":        ["prettier"],
+            "go":         ["gofmt"],
+            "rust":       ["rustfmt"],
+            "c_cpp":      ["clang-format"],
         },
         "exclude_patterns": [
             "**/node_modules/**",
@@ -184,9 +235,8 @@ def create_autoformat_config(filepath: Path = Path(".tabfix-autoformat.json")):
             "**/*.pyc",
             "**/.venv/**",
             "**/venv/**",
-        ]
+        ],
     }
-
-    with open(filepath, 'w') as f:
-        json.dump(default_config, f, indent=2)
+    with open(filepath, "w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2)
     return filepath
