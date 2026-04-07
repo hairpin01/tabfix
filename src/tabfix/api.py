@@ -187,6 +187,8 @@ def _config_to_namespace(config: TabFixConfig, check_only: bool = False) -> argp
         ns.max_file_size = 10 * 1024 * 1024
     if not hasattr(ns, "normalize_endings"):
         ns.normalize_endings = False
+    if not hasattr(ns, "respect_strings"):
+        ns.respect_strings = False
     return ns
 
 class TabFixAPI:
@@ -207,7 +209,10 @@ class TabFixAPI:
 
         if getattr(self.config, "smart_processing", False):
             try:
-                self.formatter = FileProcessor(spaces_per_tab=self.config.spaces)
+                self.formatter = FileProcessor(
+                    spaces_per_tab=self.config.spaces,
+                    preserve_quotes=getattr(self.config, "preserve_quotes", False),
+                )
             except Exception:
                 pass
 

@@ -32,6 +32,8 @@ class TabFixConfig:
     force_encoding: Optional[str] = None
     smart_processing: bool = True
     preserve_quotes: bool = False
+    detect_spaces: bool = False
+    respect_strings: bool = False
     progress: bool = False
     dry_run: bool = False
     check_only: bool = False

@@ -203,8 +203,9 @@ class EncodingDetector:
         return None
 
 class FileProcessor:
-    def __init__(self, spaces_per_tab: int = 4) -> None:
-        self.spaces_per_tab = spaces_per_tab
+    def __init__(self, spaces_per_tab: int = 4, preserve_quotes: bool = False) -> None:
+        self.spaces_per_tab  = spaces_per_tab
+        self.preserve_quotes = preserve_quotes
         self.processors = {
             ".py":          self.process_python,
             ".js":          self.process_javascript,
@@ -285,13 +286,13 @@ class FileProcessor:
                 changes.append("Formatted JSON")
                 return formatted, changes
         except json.JSONDecodeError as e:
-            fixed = self.fix_json_issues(content)
+            fixed = self.fix_json_issues(content, preserve_quotes=self.preserve_quotes)
             if fixed != content:
                 changes.append(f"Fixed JSON syntax: {str(e)[:50]}")
                 return fixed, changes
         return content, changes
 
-    def fix_json_issues(self, content: str) -> str:
+    def fix_json_issues(self, content: str, preserve_quotes: bool = False) -> str:
         """Correctly removes trailing commas before ] or }."""
         lines = content.split("\n")
         for i, line in enumerate(lines):
@@ -308,6 +309,9 @@ class FileProcessor:
                 break
 
         fixed = "\n".join(lines)
+
+        if preserve_quotes:
+            return fixed
 
         # Replace single quotes with double quotes (outside of strings)
         in_string = escape_next = False
@@ -517,6 +521,43 @@ class TabFix:
                 lines.append(line)
         return "\n".join(lines), changes
 
+    def fix_mixed_indentation_python(self, content: str) -> Tuple[str, List[str]]:
+        """
+        Python-aware variant: skips lines inside triple-quoted strings/docstrings.
+        """
+        in_string = False
+        delim = None
+        lines: List[str] = []
+        changes: List[str] = []
+
+        for i, line in enumerate(content.split("\n"), 1):
+            stripped = line.lstrip()
+            # toggle string state on triple quotes that are not escaped
+            if not in_string:
+                if stripped.startswith(("'''", '"""')):
+                    delim = stripped[:3]
+                    in_string = True
+            else:
+                if delim and delim in line:
+                    # close string if delimiter appears (naive but ok for fixer)
+                    in_string = False
+
+            if in_string or "\t" not in line:
+                lines.append(line)
+                continue
+
+            body    = line.lstrip()
+            leading = line[: len(line) - len(body)]
+            if "\t" in leading:
+                new_leading = leading.replace("\t", " " * self.spaces_per_tab)
+                fixed = new_leading + body
+                lines.append(fixed)
+                changes.append(f"Line {i}: Tabs → spaces")
+            else:
+                lines.append(line)
+
+        return "\n".join(lines), changes
+
     def fix_trailing_spaces(self, content: str) -> Tuple[str, List[str]]:
         lines: List[str] = []
         changes: List[str] = []
@@ -583,6 +624,19 @@ class TabFix:
             "total_lines":    len(lines),
             "indented_lines": tab_lines + space_lines,
         }
+
+    def detect_spaces_from_files(self, files: List[Path], sample_limit: int = 50) -> Optional[int]:
+        """Infer most common indent size from a set of files."""
+        counts: List[int] = []
+        for fp in files[:sample_limit]:
+            try:
+                text = fp.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            info = self.detect_indentation(text)
+            if info["common_indent"]:
+                counts.append(info["common_indent"])
+        return Counter(counts).most_common(1)[0][0] if counts else None
 
     def detect_encoding_and_decode(self, content: bytes, default_encoding: str = "utf-8") -> Tuple[str, str, bool]:
         def try_dec(data: bytes, enc: str) -> Optional[str]:
@@ -850,11 +904,16 @@ class TabFix:
                 self._inc("json_formatted")
 
         if getattr(args, "smart_processing", True):
+            # Respect CLI/Config flag: do not rewrite quotes when preserving them
+            self.file_processor.preserve_quotes = getattr(args, "preserve_quotes", False)
             content, sc = self.file_processor.process_by_extension(content, filepath)
             changes.extend(sc)
 
         if getattr(args, "fix_mixed", False):
-            fixed, ic = self.fix_mixed_indentation(content)
+            if filepath.suffix.lower() == ".py" and getattr(args, "respect_strings", False):
+                fixed, ic = self.fix_mixed_indentation_python(content)
+            else:
+                fixed, ic = self.fix_mixed_indentation(content)
             if fixed != content:
                 if self.detect_indentation(content)["mixed"]:
                     self._inc("mixed_indent_files")
@@ -982,7 +1041,10 @@ class TabFix:
                 changes.append("Formatted JSON")
 
         if getattr(args, "fix_mixed", False):
-            fixed, ic = self.fix_mixed_indentation(content)
+            if filepath.suffix.lower() == ".py" and getattr(args, "respect_strings", False):
+                fixed, ic = self.fix_mixed_indentation_python(content)
+            else:
+                fixed, ic = self.fix_mixed_indentation(content)
             if fixed != content:
                 content = fixed
                 changes.extend(ic)

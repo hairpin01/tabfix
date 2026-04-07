@@ -21,6 +21,10 @@ Advanced tool for fixing `tab/space` indentation issues in `code` files.
 > - `Git` integration
 > - Progress bars with tqdm
 > - Colorful output
+> - Optional quote preservation (keep original quotes while still fixing JSON commas)
+> - Auto-detect indent width across the project (`--detect-spaces`)
+> - Skip indentation fixes inside Python docstrings (`--respect-strings`)
+> - One-command pre-commit hook installer (`--install-pre-commit`)
 
 ## Installation
 ```bash
@@ -127,6 +131,8 @@ File type specific processing:
   --no-smart-processing
                         Disable smart processing for different file types
   --preserve-quotes     Preserve original string quotes in code files
+  --respect-strings     Skip indentation fixes inside Python triple-quoted strings/docstrings
+  --detect-spaces       Auto-detect dominant indent width before processing
 
 Formatting options:
   -m, --fix-mixed       Fix mixed tabs/spaces indentation
@@ -157,8 +163,21 @@ Examples:
   tabfix --recursive --remove-bom  # Process recursively, remove BOM
   tabfix --git-staged --interactive # Interactive mode on staged files
   tabfix --diff file1.py file2.py  # Compare indentation
+  tabfix --install-pre-commit      # Install Git hook that runs tabfix in check-only mode
 ```
 </details>
+
+### Quote preservation
+`--preserve-quotes` (or `preserve_quotes = true` in `.tabfixrc`) prevents tabfix from rewriting single quotes to double quotes during JSON cleanup. Trailing commas are still removed, but your original quoting style stays untouched—useful for template snippets like `def {name}:` or JSON fragments that deliberately use single quotes.
+
+### Respect docstrings
+`--respect-strings` keeps tabs inside triple-quoted strings/docstrings in Python untouched. Code outside strings is still normalized.
+
+### Auto-detect indent width
+`--detect-spaces` samples project files to pick the most common indent width (2/4/8 …) and applies it for the run.
+
+### Pre-commit hook
+`tabfix --install-pre-commit` writes `.git/hooks/pre-commit` that runs tabfix in `--check-only` mode and blocks the commit if fixes are needed.
 
 
 ## install optional dev/encoding/full 

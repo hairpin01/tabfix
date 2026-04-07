@@ -16,12 +16,29 @@ New features:
 """
 
 import sys
+import os
 import argparse
 from pathlib import Path
 
 from .core import TabFix, Colors, print_color, GitignoreMatcher, disable_colors
 from .config import TabFixConfig, ConfigLoader, init_project
 from .autoformat import get_available_formatters, create_autoformat_config, Formatter, FileProcessor
+
+
+def create_pre_commit_hook(root: Path, spaces: int) -> bool:
+    git_dir = root / ".git"
+    hook_path = git_dir / "hooks" / "pre-commit"
+    if not git_dir.exists():
+        return False
+    hook_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = f'tabfix --check-only --recursive --fix-mixed --fix-trailing --normalize-endings --format-json --spaces {spaces} .'
+    script = f"#!/usr/bin/env bash\n{cmd}\nstatus=$?\nif [ $status -ne 0 ]; then\n  echo \"tabfix: fix issues before commit\" >&2\nfi\nexit $status\n"
+    try:
+        hook_path.write_text(script, encoding="utf-8")
+        os.chmod(hook_path, 0o755)
+        return True
+    except OSError:
+        return False
 
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -57,6 +74,8 @@ Examples:
     git.add_argument("--git-unstaged",    action="store_true", help="Process unstaged files only")
     git.add_argument("--git-all-changed", action="store_true", help="Process all changed files")
     git.add_argument("--no-gitignore",    action="store_true", help="Ignore .gitignore patterns")
+    git.add_argument("--install-pre-commit", action="store_true",
+                     help="Install a Git pre-commit hook that runs tabfix in check-only mode")
 
     af = parser.add_argument_group("Autoformatting")
     af.add_argument("--autoformat",      "-a", action="store_true",
@@ -90,6 +109,10 @@ Examples:
                     help="Disable smart per-extension processing")
     ft.add_argument("--preserve-quotes",     action="store_true",
                     help="Preserve original string quotes in code files")
+    ft.add_argument("--respect-strings",     action="store_true",
+                    help="Skip indentation fixes inside Python triple-quoted strings/docstrings")
+    ft.add_argument("--detect-spaces",       action="store_true",
+                    help="Auto-detect dominant indent width from project files before running")
 
     fmt = parser.add_argument_group("Formatting options")
     fmt.add_argument("-m", "--fix-mixed",         action="store_true",
@@ -174,31 +197,23 @@ def main() -> None:
         print_color("--dry-run and --check-only are redundant; using --check-only", Colors.YELLOW)
         args.dry_run = False
 
-    fixer          = TabFix(spaces_per_tab=args.spaces)
-    file_processor = None
-
-    if args.autoformat or args.check_format:
-        file_processor = FileProcessor(spaces_per_tab=args.spaces)
-        if args.formatters:
-            try:
-                args.formatter_list = [Formatter(f.strip()) for f in args.formatters.split(",")]
-            except ValueError as e:
-                print_color(f"Invalid formatter: {e}", Colors.RED)
-                sys.exit(1)
+    if args.install_pre_commit:
+        ok = create_pre_commit_hook(Path.cwd(), args.spaces)
+        if ok:
+            print_color("Installed .git/hooks/pre-commit for tabfix", Colors.GREEN)
+            sys.exit(0)
         else:
-            args.formatter_list = None
-
-    if args.diff:
-        fixer.compare_files(Path(args.diff[0]), Path(args.diff[1]), args)
-        return
+            print_color("Failed to install pre-commit hook (is this a git repo?)", Colors.RED)
+            sys.exit(1)
 
     files_to_process = []
+    finder = TabFix(spaces_per_tab=args.spaces)
 
     if args.git_staged or args.git_unstaged or args.git_all_changed:
         mode = ("staged"      if args.git_staged
                 else "unstaged" if args.git_unstaged
                 else "all_changed")
-        files_to_process = fixer.get_git_files(mode)
+        files_to_process = finder.get_git_files(mode)
     else:
         for path_str in args.paths:
             path = Path(path_str)
@@ -242,6 +257,33 @@ def main() -> None:
     if not processed:
         if not args.quiet:
             print_color("No files to process after .gitignore filter", Colors.YELLOW)
+        return
+
+    # Auto-detect indent width if requested
+    if args.detect_spaces:
+        detector = TabFix(spaces_per_tab=args.spaces)
+        detected = detector.detect_spaces_from_files(processed)
+        if detected:
+            args.spaces = detected
+            if not args.quiet:
+                print_color(f"Auto-detected indent: {detected} spaces", Colors.CYAN)
+
+    fixer          = TabFix(spaces_per_tab=args.spaces)
+    file_processor = None
+
+    if args.autoformat or args.check_format:
+        file_processor = FileProcessor(spaces_per_tab=args.spaces)
+        if args.formatters:
+            try:
+                args.formatter_list = [Formatter(f.strip()) for f in args.formatters.split(",")]
+            except ValueError as e:
+                print_color(f"Invalid formatter: {e}", Colors.RED)
+                sys.exit(1)
+        else:
+            args.formatter_list = None
+
+    if args.diff:
+        fixer.compare_files(Path(args.diff[0]), Path(args.diff[1]), args)
         return
 
     try:
