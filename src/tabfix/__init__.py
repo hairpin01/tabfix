@@ -2,7 +2,7 @@
 tabfix — Advanced tab/space indentation fixer with autoformatting.
 """
 
-__version__ = "1.4.0"
+__version__ = "1.2.8"
 
 from .core import (
     TabFix,
